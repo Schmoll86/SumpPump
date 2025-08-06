@@ -356,6 +356,119 @@ class TWSConnection:
         
         return ticker
     
+    def get_account_info_sync(self) -> Dict[str, Any]:
+        """
+        Get account information including balances and positions (synchronous version).
+        
+        Returns:
+            Dictionary with account details
+        """
+        try:
+            if not self.connected or not self.ib.isConnected():
+                logger.error("TWS not connected - connection required before calling get_account_info")
+                return {
+                    'error': 'TWS not connected',
+                    'account_id': config.tws.account,
+                    'net_liquidation': 0.0,
+                    'available_funds': 0.0,
+                    'buying_power': 0.0,
+                    'positions': [],
+                    'open_orders': []
+                }
+            
+            logger.info("Fetching account information from TWS")
+            
+            # Auto-detect account ID if not configured
+            account_id = config.tws.account
+            if not account_id or account_id.strip() == "" or "#" in account_id:
+                logger.info("No valid account ID configured, attempting to detect...")
+                managed_accounts = self.ib.managedAccounts()
+                logger.info(f"Available accounts: {managed_accounts}")
+                if managed_accounts:
+                    account_id = managed_accounts[0]  # Use first available account
+                    logger.info(f"Auto-detected account ID: {account_id}")
+                else:
+                    logger.error("No managed accounts found")
+                    account_id = ""
+            
+            # Get account summary
+            self.ib.reqAccountSummary()
+            import time
+            time.sleep(2)  # Wait for data synchronously
+            account_values = self.ib.accountSummary()
+            logger.info(f"Retrieved {len(account_values)} account values")
+            
+            # Get positions
+            self.ib.reqPositions()
+            time.sleep(1)  # Wait for data synchronously
+            positions = self.ib.positions()
+            logger.info(f"Retrieved {len(positions)} positions")
+            
+            # Get open orders  
+            self.ib.reqOpenOrders()
+            time.sleep(1)  # Wait for data synchronously
+            open_orders = self.ib.openOrders()
+            logger.info(f"Retrieved {len(open_orders)} open orders")
+            
+            # Initialize account info with detected account ID
+            account_info = {
+                'account_id': account_id or config.tws.account,
+                'net_liquidation': 0.0,
+                'available_funds': 0.0,
+                'buying_power': 0.0,
+                'positions': [],
+                'open_orders': []
+            }
+            
+            # Parse account values (filter by USD currency)
+            for av in account_values:
+                logger.debug(f"Account value: {av.tag} = {av.value} ({av.currency})")
+                if av.currency == 'USD':  # Only process USD values
+                    if av.tag == 'NetLiquidation':
+                        account_info['net_liquidation'] = float(av.value)
+                    elif av.tag == 'AvailableFunds':
+                        account_info['available_funds'] = float(av.value)
+                    elif av.tag == 'BuyingPower':
+                        account_info['buying_power'] = float(av.value)
+            
+            # Parse positions
+            for pos in positions:
+                account_info['positions'].append({
+                    'symbol': pos.contract.symbol,
+                    'position': pos.position,
+                    'avg_cost': pos.avgCost,
+                    'contract': str(pos.contract)
+                })
+            
+            # Parse open orders
+            for order in open_orders:
+                account_info['open_orders'].append({
+                    'order_id': order.orderId,
+                    'symbol': order.contract.symbol,
+                    'action': order.action,
+                    'quantity': order.totalQuantity,
+                    'order_type': order.orderType,
+                    'status': order.status
+                })
+            
+            logger.info(f"Account info: NetLiq=${account_info['net_liquidation']:,.2f}, "
+                       f"Available=${account_info['available_funds']:,.2f}, "
+                       f"BuyingPower=${account_info['buying_power']:,.2f}")
+            
+            return account_info
+            
+        except Exception as e:
+            logger.error(f"Error getting account info: {e}")
+            return {
+                'error': str(e),
+                'account_id': config.tws.account,
+                'net_liquidation': 0.0,
+                'available_funds': 0.0,
+                'buying_power': 0.0,
+                'positions': [],
+                'open_orders': []
+            }
+
     async def get_account_info(self) -> Dict[str, Any]:
         """
         Get account information including balances and positions.
@@ -364,9 +477,18 @@ class TWSConnection:
             Dictionary with account details
         """
         try:
+            # Check if we need to reconnect - but don't do it async
             if not self.connected or not self.ib.isConnected():
-                logger.warning("Connection lost, attempting to reconnect...")
-                await self.connect()
+                logger.error("TWS not connected - connection required before calling get_account_info")
+                return {
+                    'error': 'TWS not connected',
+                    'account_id': config.tws.account,
+                    'net_liquidation': 0.0,
+                    'available_funds': 0.0,
+                    'buying_power': 0.0,
+                    'positions': [],
+                    'open_orders': []
+                }
             
             if not self.ib.isConnected():
                 logger.error("TWS not connected when requesting account info")
@@ -397,19 +519,20 @@ class TWSConnection:
             
             # Get account summary - correct ib_async method
             self.ib.reqAccountSummary()
-            await asyncio.sleep(2)  # Wait for data
+            import time
+            time.sleep(2)  # Wait for data synchronously
             account_values = self.ib.accountSummary()
             logger.info(f"Retrieved {len(account_values)} account values")
             
             # Get positions
             self.ib.reqPositions()
-            await asyncio.sleep(1)  # Wait for data
+            time.sleep(1)  # Wait for data synchronously
             positions = self.ib.positions()
             logger.info(f"Retrieved {len(positions)} positions")
             
             # Get open orders  
             self.ib.reqOpenOrders()
-            await asyncio.sleep(1)  # Wait for data
+            time.sleep(1)  # Wait for data synchronously
             open_orders = self.ib.openOrders()
             logger.info(f"Retrieved {len(open_orders)} open orders")
             
@@ -423,15 +546,16 @@ class TWSConnection:
                 'open_orders': []
             }
             
-            # Parse account values
+            # Parse account values (filter by USD currency)
             for av in account_values:
-                logger.debug(f"Account value: {av.tag} = {av.value}")
-                if av.tag == 'NetLiquidation':
-                    account_info['net_liquidation'] = float(av.value)
-                elif av.tag == 'AvailableFunds':
-                    account_info['available_funds'] = float(av.value)
-                elif av.tag == 'BuyingPower':
-                    account_info['buying_power'] = float(av.value)
+                logger.debug(f"Account value: {av.tag} = {av.value} ({av.currency})")
+                if av.currency == 'USD':  # Only process USD values
+                    if av.tag == 'NetLiquidation':
+                        account_info['net_liquidation'] = float(av.value)
+                    elif av.tag == 'AvailableFunds':
+                        account_info['available_funds'] = float(av.value)
+                    elif av.tag == 'BuyingPower':
+                        account_info['buying_power'] = float(av.value)
             
             # Parse positions
             for pos in positions:

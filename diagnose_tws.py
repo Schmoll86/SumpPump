@@ -57,7 +57,7 @@ async def diagnose_tws():
         # 4. Test account summary
         logger.info("\n4. Testing account summary retrieval...")
         try:
-            account_info = await tws_connection.get_account_info()
+            account_info = tws_connection.get_account_info_sync()
             logger.info("Account Information Retrieved:")
             logger.info(f"   Account ID: {account_info.get('account_id', 'Unknown')}")
             logger.info(f"   Net Liquidation: ${account_info.get('net_liquidation', 0):,.2f}")

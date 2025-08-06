@@ -364,7 +364,9 @@ class TWSConnection:
             Dictionary with account details
         """
         try:
-            await self.ensure_connected()
+            if not self.connected or not self.ib.isConnected():
+                logger.warning("Connection lost, attempting to reconnect...")
+                await self.connect()
             
             if not self.ib.isConnected():
                 logger.error("TWS not connected when requesting account info")
@@ -382,9 +384,9 @@ class TWSConnection:
             
             # Auto-detect account ID if not configured
             account_id = config.tws.account
-            if not account_id or account_id.strip() == "":
-                logger.info("No account ID configured, attempting to detect...")
-                managed_accounts = await self.ib.reqManagedAccountsAsync()
+            if not account_id or account_id.strip() == "" or "#" in account_id:
+                logger.info("No valid account ID configured, attempting to detect...")
+                managed_accounts = self.ib.managedAccounts()
                 logger.info(f"Available accounts: {managed_accounts}")
                 if managed_accounts:
                     account_id = managed_accounts[0]  # Use first available account
@@ -393,20 +395,22 @@ class TWSConnection:
                     logger.error("No managed accounts found")
                     account_id = ""
             
-            # Get account summary with proper account ID
-            if account_id:
-                account_values = await self.ib.reqAccountSummaryAsync('All', account_id, 'NetLiquidation,AvailableFunds,BuyingPower,TotalCashValue')
-            else:
-                # Fallback: try without account ID
-                account_values = await self.ib.reqAccountSummaryAsync()
+            # Get account summary - correct ib_async method
+            self.ib.reqAccountSummary()
+            await asyncio.sleep(2)  # Wait for data
+            account_values = self.ib.accountSummary()
             logger.info(f"Retrieved {len(account_values)} account values")
             
             # Get positions
-            positions = await self.ib.reqPositionsAsync()
+            self.ib.reqPositions()
+            await asyncio.sleep(1)  # Wait for data
+            positions = self.ib.positions()
             logger.info(f"Retrieved {len(positions)} positions")
             
             # Get open orders  
-            open_orders = await self.ib.reqOpenOrdersAsync()
+            self.ib.reqOpenOrders()
+            await asyncio.sleep(1)  # Wait for data
+            open_orders = self.ib.openOrders()
             logger.info(f"Retrieved {len(open_orders)} open orders")
             
             # Initialize account info with detected account ID
@@ -429,24 +433,6 @@ class TWSConnection:
                 elif av.tag == 'BuyingPower':
                     account_info['buying_power'] = float(av.value)
             
-            logger.info(f"Account info: NetLiq=${account_info['net_liquidation']:,.2f}, "
-                       f"Available=${account_info['available_funds']:,.2f}, "
-                       f"BuyingPower=${account_info['buying_power']:,.2f}")
-            
-            return account_info
-            
-        except Exception as e:
-            logger.error(f"Error getting account info: {e}")
-            return {
-                'error': str(e),
-                'account_id': config.tws.account,
-                'net_liquidation': 0.0,
-                'available_funds': 0.0,
-                'buying_power': 0.0,
-                'positions': [],
-                'open_orders': []
-            }
-            
             # Parse positions
             for pos in positions:
                 account_info['positions'].append({
@@ -467,7 +453,23 @@ class TWSConnection:
                     'status': order.status
                 })
             
+            logger.info(f"Account info: NetLiq=${account_info['net_liquidation']:,.2f}, "
+                       f"Available=${account_info['available_funds']:,.2f}, "
+                       f"BuyingPower=${account_info['buying_power']:,.2f}")
+            
             return account_info
+            
+        except Exception as e:
+            logger.error(f"Error getting account info: {e}")
+            return {
+                'error': str(e),
+                'account_id': config.tws.account,
+                'net_liquidation': 0.0,
+                'available_funds': 0.0,
+                'buying_power': 0.0,
+                'positions': [],
+                'open_orders': []
+            }
     
     async def place_combo_order(self, strategy: Strategy, order_type: str = 'MKT') -> Dict[str, Any]:
         """

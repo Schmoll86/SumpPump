@@ -39,7 +39,7 @@ async def diagnose_tws():
         # 2. Test managed accounts
         logger.info("\n2. Checking managed accounts...")
         try:
-            managed_accounts = await tws_connection.ib.reqManagedAccountsAsync()
+            managed_accounts = tws_connection.ib.managedAccounts()
             logger.info(f"✅ Managed accounts: {managed_accounts}")
             if not managed_accounts:
                 logger.warning("⚠️  No managed accounts found")

@@ -380,8 +380,25 @@ class TWSConnection:
             
             logger.info("Fetching account information from TWS")
             
-            # Get account summary
-            account_values = await self.ib.reqAccountSummaryAsync()
+            # Auto-detect account ID if not configured
+            account_id = config.tws.account
+            if not account_id or account_id.strip() == "":
+                logger.info("No account ID configured, attempting to detect...")
+                managed_accounts = await self.ib.reqManagedAccountsAsync()
+                logger.info(f"Available accounts: {managed_accounts}")
+                if managed_accounts:
+                    account_id = managed_accounts[0]  # Use first available account
+                    logger.info(f"Auto-detected account ID: {account_id}")
+                else:
+                    logger.error("No managed accounts found")
+                    account_id = ""
+            
+            # Get account summary with proper account ID
+            if account_id:
+                account_values = await self.ib.reqAccountSummaryAsync('All', account_id, 'NetLiquidation,AvailableFunds,BuyingPower,TotalCashValue')
+            else:
+                # Fallback: try without account ID
+                account_values = await self.ib.reqAccountSummaryAsync()
             logger.info(f"Retrieved {len(account_values)} account values")
             
             # Get positions
@@ -392,8 +409,9 @@ class TWSConnection:
             open_orders = await self.ib.reqOpenOrdersAsync()
             logger.info(f"Retrieved {len(open_orders)} open orders")
             
+            # Initialize account info with detected account ID
             account_info = {
-                'account_id': config.tws.account,
+                'account_id': account_id or config.tws.account,
                 'net_liquidation': 0.0,
                 'available_funds': 0.0,
                 'buying_power': 0.0,

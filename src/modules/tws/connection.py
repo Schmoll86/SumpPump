@@ -4,7 +4,8 @@ Handles connection, reconnection, and market data subscriptions.
 """
 
 import asyncio
-from typing import Optional, List, Dict, Any, Set
+import time
+from typing import Optional, List, Dict, Any, Set, Tuple
 from datetime import datetime, date
 from contextlib import asynccontextmanager
 from decimal import Decimal
@@ -508,7 +509,7 @@ class TWSConnection:
             
             # Get account summary
             self.ib.reqAccountSummary()
-            await asyncio.sleep(2)  # Wait for data asynchronously
+            time.sleep(2)  # Wait for data synchronously
             account_values = self.ib.accountSummary()
             logger.info(f"Retrieved {len(account_values)} account values")
             

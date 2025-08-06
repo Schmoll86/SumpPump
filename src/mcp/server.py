@@ -60,14 +60,15 @@ class TradeExecutionRequest(BaseModel):
     confirm_token: str = Field(..., description="Confirmation token from user")
 
 # MCP Tool: Get Options Chain
-@mcp.tool()
+@mcp.tool(name="trade_get_options_chain")
 async def get_options_chain(
     symbol: str,
     expiry: Optional[str] = None,
     include_stats: bool = True
 ) -> Dict[str, Any]:
     """
-    Fetch full options chain for a symbol with Greeks and statistics.
+    [TRADING] Fetch IBKR options chain with Greeks for stocks/ETFs.
+    Real-time options market data, not file operations.
     
     Args:
         symbol: Stock symbol (e.g., 'AAPL')
@@ -138,7 +139,7 @@ async def get_options_chain(
         }
 
 # MCP Tool: Calculate Strategy
-@mcp.tool()
+@mcp.tool(name="trade_calculate_strategy")
 async def calculate_strategy(
     strategy_type: str,
     symbol: str,
@@ -295,13 +296,14 @@ async def calculate_strategy(
         return {'error': str(e)}
 
 # MCP Tool: Execute Trade
-@mcp.tool()
+@mcp.tool(name="trade_execute")
 async def execute_trade(
     strategy: Dict[str, Any],
     confirm_token: str
 ) -> Dict[str, Any]:
     """
-    Execute a Level 2 compliant trade with mandatory confirmation.
+    [TRADING] Execute live trades through IBKR TWS.
+    REAL MONEY - Requires explicit confirmation. Not a simulation.
     
     CRITICAL: 
     - Requires explicit confirmation token "USER_CONFIRMED"
@@ -475,7 +477,7 @@ async def execute_trade(
         }
 
 # MCP Tool: Set Stop Loss
-@mcp.tool()
+@mcp.tool(name="trade_set_stop_loss")
 async def set_stop_loss(
     position_id: str,
     stop_price: float
@@ -499,7 +501,7 @@ async def set_stop_loss(
     }
 
 # MCP Tool: Get News
-@mcp.tool()
+@mcp.tool(name="trade_get_news")
 async def get_news(
     symbol: str,
     provider: str = 'all',
@@ -662,7 +664,7 @@ async def get_news(
         }
 
 # MCP Tool: Get Level 2 Depth
-@mcp.tool()
+@mcp.tool(name="trade_get_market_depth")
 async def get_market_depth(
     symbol: str,
     levels: int = 5
@@ -708,7 +710,7 @@ async def get_market_depth(
 
 
 # MCP Tool: Get Depth Analytics
-@mcp.tool()
+@mcp.tool(name="trade_get_depth_analytics")
 async def get_depth_analytics(symbol: str) -> Dict[str, Any]:
     """
     Get advanced depth analytics including price impact estimates.
@@ -738,7 +740,7 @@ async def get_depth_analytics(symbol: str) -> Dict[str, Any]:
 
 
 # MCP Tool: Get Index Quote
-@mcp.tool()
+@mcp.tool(name="trade_get_index_quote")
 async def get_index_quote(symbol: str) -> Dict[str, Any]:
     """
     Get index quote (SPX, NDX, VIX, etc).
@@ -775,7 +777,7 @@ async def get_index_quote(symbol: str) -> Dict[str, Any]:
 
 
 # MCP Tool: Get Index Options
-@mcp.tool()
+@mcp.tool(name="trade_get_index_options")
 async def get_index_options(
     symbol: str,
     expiry: Optional[str] = None,
@@ -836,7 +838,7 @@ async def get_index_options(
 
 
 # MCP Tool: Get Crypto Quote
-@mcp.tool()
+@mcp.tool(name="trade_get_crypto_quote")
 async def get_crypto_quote(
     symbol: str,
     quote_currency: str = "USD"
@@ -880,7 +882,7 @@ async def get_crypto_quote(
 
 
 # MCP Tool: Get Crypto Analysis
-@mcp.tool()
+@mcp.tool(name="trade_analyze_crypto")
 async def analyze_crypto(symbol: str) -> Dict[str, Any]:
     """
     Get comprehensive crypto analysis with technicals.
@@ -920,7 +922,7 @@ async def analyze_crypto(symbol: str) -> Dict[str, Any]:
 
 
 # MCP Tool: Get FX Quote
-@mcp.tool()
+@mcp.tool(name="trade_get_fx_quote")
 async def get_fx_quote(pair: str) -> Dict[str, Any]:
     """
     Get forex quote (EURUSD, GBPUSD, etc).
@@ -960,7 +962,7 @@ async def get_fx_quote(pair: str) -> Dict[str, Any]:
 
 
 # MCP Tool: Get FX Analytics
-@mcp.tool()
+@mcp.tool(name="trade_analyze_fx_pair")
 async def analyze_fx_pair(pair: str) -> Dict[str, Any]:
     """
     Get forex pair analysis with technicals and recommendation.
@@ -1000,7 +1002,7 @@ async def analyze_fx_pair(pair: str) -> Dict[str, Any]:
 
 
 # MCP Tool: Get VIX Term Structure
-@mcp.tool()
+@mcp.tool(name="trade_get_vix_term_structure")
 async def get_vix_term_structure() -> List[Dict[str, Any]]:
     """
     Get VIX futures term structure for volatility analysis.
@@ -1027,10 +1029,11 @@ async def get_vix_term_structure() -> List[Dict[str, Any]]:
 
 
 # MCP Tool: Get My Positions
-@mcp.tool()
+@mcp.tool(name="trade_get_positions")
 async def get_my_positions() -> Dict[str, Any]:
     """
-    Get all open positions with current P&L.
+    [TRADING] Get all IBKR positions with P&L.
+    Investment portfolio positions, not file positions.
     
     Returns:
         Dict containing all positions with unrealized P&L, market values, and Greeks
@@ -1124,7 +1127,7 @@ async def get_my_positions() -> Dict[str, Any]:
 
 
 # MCP Tool: Get Open Orders
-@mcp.tool()
+@mcp.tool(name="trade_get_open_orders")
 async def get_open_orders() -> Dict[str, Any]:
     """
     Get all pending/open orders.
@@ -1246,7 +1249,7 @@ async def get_open_orders() -> Dict[str, Any]:
         }
 
 
-@mcp.tool()
+@mcp.tool(name="trade_close_position")
 async def close_position(
     symbol: str,
     position_type: str,  # 'call', 'put', 'spread', 'stock'
@@ -1256,7 +1259,8 @@ async def close_position(
     position_id: Optional[str] = None  # Optional specific position ID
 ) -> Dict[str, Any]:
     """
-    Close an existing option or stock position.
+    [TRADING] Close IBKR trading positions.
+    Sell investments to exit trades, not closing files.
     
     Args:
         symbol: Symbol of the position to close
@@ -1293,7 +1297,7 @@ async def close_position(
         }
 
 
-@mcp.tool()
+@mcp.tool(name="trade_set_stop_loss")
 async def set_stop_loss(
     position_id: str,
     stop_price: float,
@@ -1337,7 +1341,7 @@ async def set_stop_loss(
         }
 
 
-@mcp.tool()
+@mcp.tool(name="trade_modify_order")
 async def modify_order(
     order_id: str,
     new_limit_price: Optional[float] = None,
@@ -1378,7 +1382,7 @@ async def modify_order(
         }
 
 
-@mcp.tool()
+@mcp.tool(name="trade_cancel_order")
 async def cancel_order(
     order_id: str,
     cancel_all: bool = False
@@ -1413,7 +1417,7 @@ async def cancel_order(
         }
 
 
-@mcp.tool()
+@mcp.tool(name="trade_set_price_alert")
 async def set_price_alert(
     symbol: str,
     trigger_price: float,
@@ -1457,7 +1461,7 @@ async def set_price_alert(
         }
 
 
-@mcp.tool()
+@mcp.tool(name="trade_roll_option")
 async def roll_option_position(
     position_id: str,
     new_strike: Optional[float] = None,

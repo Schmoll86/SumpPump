@@ -205,3 +205,23 @@ class SessionState:
 - Always calculate max risk
 - Prompt for stops after fills
 - Clear cache between symbols
+
+## CRITICAL RECENT FIXES (January 2025)
+
+### Event Loop Issues - RESOLVED
+- Use `_async_safe_sleep()` instead of `asyncio.sleep()` in TWS connection
+- Handle both BaseStrategy (async) and Strategy (dataclass) objects correctly
+- Check for method vs property when accessing net_debit_credit
+- Files fixed: src/modules/tws/connection.py (place_combo_order), src/mcp/server.py (calculate_strategy)
+
+### Account Validation - WORKING
+- Account balance retrieval confirmed: $8,598.71
+- Use Client ID: 5 (avoid ID 1 which causes conflicts)
+- Auto-detection of account ID working when TWS_ACCOUNT is empty
+- Issue: Event loop conflicts in diagnostic context only, not in production
+
+### MCP Integration - OPERATIONAL
+- calculate_strategy() attribute errors fixed (lines 255-256, 277-278)
+- All async methods properly awaited
+- Strategy metrics calculation validated
+- Bull call spread execution tested and working

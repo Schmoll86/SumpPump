@@ -54,11 +54,11 @@ async def diagnose_tws():
         else:
             logger.info(f"✅ Account ID configured: {config.tws.account}")
             
-        # 4. Test account summary
-        logger.info("\n4. Testing account summary retrieval...")
+        # 4. Test account summary (async version)
+        logger.info("\n4. Testing async account summary retrieval...")
         try:
-            account_info = tws_connection.get_account_info_sync()
-            logger.info("Account Information Retrieved:")
+            account_info = await tws_connection.get_account_info()
+            logger.info("Account Information Retrieved (ASYNC):")
             logger.info(f"   Account ID: {account_info.get('account_id', 'Unknown')}")
             logger.info(f"   Net Liquidation: ${account_info.get('net_liquidation', 0):,.2f}")
             logger.info(f"   Available Funds: ${account_info.get('available_funds', 0):,.2f}")
@@ -67,12 +67,21 @@ async def diagnose_tws():
             logger.info(f"   Open Orders: {len(account_info.get('open_orders', []))}")
             
             if account_info.get('net_liquidation', 0) > 0:
-                logger.info("✅ Account data looks good")
+                logger.info("✅ Async account data looks good")
             else:
-                logger.error("❌ Account balance is $0 - this indicates a connection issue")
+                logger.error("❌ Async account balance is $0 - this indicates a connection issue")
                 
         except Exception as e:
-            logger.error(f"❌ Error getting account info: {e}")
+            logger.error(f"❌ Error getting async account info: {e}")
+            
+        # 4b. Test sync version for comparison
+        logger.info("\n4b. Testing sync account summary for comparison...")
+        try:
+            account_info_sync = tws_connection.get_account_info_sync()
+            logger.info(f"   Sync Net Liquidation: ${account_info_sync.get('net_liquidation', 0):,.2f}")
+            logger.info(f"   Sync Available Funds: ${account_info_sync.get('available_funds', 0):,.2f}")
+        except Exception as e:
+            logger.error(f"❌ Error getting sync account info: {e}")
             
         # 5. Test simple market data
         logger.info("\n5. Testing market data access...")

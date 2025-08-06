@@ -17,6 +17,38 @@ from src.config import config
 from src.models import OptionContract, OptionRight, Greeks, Strategy
 
 
+def _safe_sleep(duration: float):
+    """Sleep that handles both async and sync contexts."""
+    try:
+        # Check if we're in an async context
+        loop = asyncio.get_running_loop()
+        if loop.is_running():
+            # We're in a running event loop, use sync sleep
+            import time
+            time.sleep(duration)
+        else:
+            # No running loop, this shouldn't happen in async context
+            import time
+            time.sleep(duration)
+    except RuntimeError:
+        # No event loop running, use sync sleep
+        import time
+        time.sleep(duration)
+
+
+async def _async_safe_sleep(duration: float):
+    """Async sleep that gracefully falls back to sync when needed."""
+    try:
+        await asyncio.sleep(duration)
+    except RuntimeError as e:
+        if "This event loop is already running" in str(e):
+            # Fall back to synchronous sleep
+            import time
+            time.sleep(duration)
+        else:
+            raise
+
+
 class TWSConnectionError(Exception):
     """Custom exception for TWS connection issues."""
     pass
@@ -77,7 +109,7 @@ class TWSConnection:
                 logger.error(f"Connection attempt {self.reconnect_attempts} failed: {e}")
                 
                 if self.reconnect_attempts < self.max_reconnect_attempts:
-                    await asyncio.sleep(2 ** self.reconnect_attempts)  # Exponential backoff
+                    await _async_safe_sleep(2 ** self.reconnect_attempts)  # Exponential backoff
                     
         raise TWSConnectionError(f"Failed to connect after {self.max_reconnect_attempts} attempts")
         
@@ -477,18 +509,23 @@ class TWSConnection:
             Dictionary with account details
         """
         try:
-            # Check if we need to reconnect - but don't do it async
+            # Ensure we're connected - now with proper async handling
             if not self.connected or not self.ib.isConnected():
-                logger.error("TWS not connected - connection required before calling get_account_info")
-                return {
-                    'error': 'TWS not connected',
-                    'account_id': config.tws.account,
-                    'net_liquidation': 0.0,
-                    'available_funds': 0.0,
-                    'buying_power': 0.0,
-                    'positions': [],
-                    'open_orders': []
-                }
+                logger.warning("Connection lost, attempting to reconnect...")
+                try:
+                    await self.connect()
+                except RuntimeError:
+                    # If in nested event loop, return error
+                    logger.error("Cannot reconnect in nested event loop context")
+                    return {
+                        'error': 'TWS connection lost and cannot reconnect in current context',
+                        'account_id': config.tws.account,
+                        'net_liquidation': 0.0,
+                        'available_funds': 0.0,
+                        'buying_power': 0.0,
+                        'positions': [],
+                        'open_orders': []
+                    }
             
             if not self.ib.isConnected():
                 logger.error("TWS not connected when requesting account info")
@@ -517,22 +554,26 @@ class TWSConnection:
                     logger.error("No managed accounts found")
                     account_id = ""
             
-            # Get account summary - correct ib_async method
+            # Get account summary - using proper async/await pattern
+            logger.debug("Requesting account summary...")
             self.ib.reqAccountSummary()
-            import time
-            time.sleep(2)  # Wait for data synchronously
+            
+            # Wait for account data using safe sleep
+            logger.debug("Waiting for account data...")
+            await _async_safe_sleep(2)
+            logger.debug("Getting account summary...")
             account_values = self.ib.accountSummary()
             logger.info(f"Retrieved {len(account_values)} account values")
             
             # Get positions
             self.ib.reqPositions()
-            time.sleep(1)  # Wait for data synchronously
+            await _async_safe_sleep(1)  # Wait for position data
             positions = self.ib.positions()
             logger.info(f"Retrieved {len(positions)} positions")
             
             # Get open orders  
             self.ib.reqOpenOrders()
-            time.sleep(1)  # Wait for data synchronously
+            await _async_safe_sleep(1)  # Wait for order data
             open_orders = self.ib.openOrders()
             logger.info(f"Retrieved {len(open_orders)} open orders")
             
@@ -595,6 +636,59 @@ class TWSConnection:
                 'open_orders': []
             }
     
+    async def place_stock_order(self, symbol: str, quantity: int, action: str = 'BUY', order_type: str = 'LMT', limit_price: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Place a stock order.
+        
+        Args:
+            symbol: Stock symbol
+            quantity: Number of shares
+            action: 'BUY' or 'SELL'
+            order_type: 'MKT' for market, 'LMT' for limit
+            limit_price: Limit price (required for limit orders)
+        
+        Returns:
+            Order placement result
+        """
+        try:
+            await self.ensure_connected()
+            
+            # Create stock contract
+            stock = self.create_stock_contract(symbol)
+            await self.ib.qualifyContractsAsync(stock)
+            
+            # Create order
+            if order_type == 'MKT':
+                order = MarketOrder(action, quantity)
+            elif order_type == 'LMT':
+                if limit_price is None:
+                    raise ValueError("Limit price required for limit orders")
+                order = LimitOrder(action, quantity, limit_price)
+            else:
+                raise ValueError(f"Unsupported order type: {order_type}")
+                
+            # Place the order
+            trade = self.ib.placeOrder(stock, order)
+            
+            # Wait for order to be acknowledged
+            await asyncio.sleep(2)
+            
+            logger.info(f"Placed {action} order for {quantity} shares of {symbol} at {limit_price if limit_price else 'market price'}")
+            
+            return {
+                'order_id': trade.order.orderId,
+                'status': trade.orderStatus.status if hasattr(trade, 'orderStatus') else 'Submitted',
+                'symbol': symbol,
+                'quantity': quantity,
+                'action': action,
+                'order_type': order_type,
+                'limit_price': limit_price
+            }
+            
+        except Exception as e:
+            logger.error(f"Error placing stock order for {symbol}: {e}")
+            raise TWSConnectionError(f"Failed to place stock order: {e}")
+
     async def place_combo_order(self, strategy: Strategy, order_type: str = 'MKT') -> Dict[str, Any]:
         """
         Place a combo order for an options strategy.

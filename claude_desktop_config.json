@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "sump-pump": {
+      "command": "python",
+      "args": [
+        "/Users/schmoll/Desktop/SumpPump/src/mcp/server.py"
+      ],
+      "env": {
+        "PYTHONPATH": "/Users/schmoll/Desktop/SumpPump"
+      }
+    }
+  }
+}

@@ -1,0 +1,111 @@
+# 🚀 Claude Code Prompt for Windsurf - SumpPump Development
+
+Copy and paste this entire prompt into Claude Code in Windsurf to continue development:
+
+---
+
+## Initialize SumpPump Development Session
+
+I need to continue developing the SumpPump IBKR Options Trading Assistant. This is a LIVE TRADING system (port 7497) with mandatory safety controls.
+
+### Project Overview
+SumpPump is an MCP server that bridges Claude Desktop with Interactive Brokers TWS for conversational options trading. The architecture has been established with safety-first design using ib_async (NOT ib_insync) and FastMCP.
+
+### First Actions Required:
+1. Read and load ALL context files:
+   - `/Users/schmoll/Desktop/SumpPump/CLAUDE.md` - Master context
+   - `/Users/schmoll/Desktop/SumpPump/docs/ai-context/project-structure.md` - Tech stack
+   - `/Users/schmoll/Desktop/SumpPump/docs/ai-context/handoff.md` - Current state
+   - `/Users/schmoll/Desktop/SumpPump/PROJECT_SETUP.md` - Implementation guide
+
+2. Review the existing skeleton:
+   - `src/mcp/server.py` - MCP tools ready for implementation
+   - `src/modules/tws/connection.py` - TWS connection started
+   - `src/models.py` - Data models complete
+   - `src/config.py` - Configuration system ready
+
+### Development Task: Phase 1 - Complete TWS Connection
+
+Complete the TWS connection module at `src/modules/tws/connection.py` with:
+
+```python
+# Key requirements:
+- Use ib_async (the modern fork, NOT ib_insync)
+- Implement market data subscriptions for options
+- Add contract creation helpers for Stock and Option
+- Handle reconnection with exponential backoff
+- Create methods for:
+  * get_options_chain(symbol: str)
+  * subscribe_to_market_data(contract: Contract)
+  * get_account_info()
+  * place_combo_order(strategy: Strategy)
+```
+
+After completing the connection, create `src/modules/data/options_chain.py` with:
+- Full chain fetching with Greeks
+- Caching in SQLite with TTL
+- Real-time updates via subscription
+
+### Critical Safety Requirements:
+1. **LIVE TRADING** - This connects to real money (port 7497)
+2. **Confirmation Required** - NEVER execute without explicit user confirmation
+3. **Calculate Risk** - Always show max loss before execution
+4. **Stop Loss Prompts** - After every fill, prompt for stops
+
+### Testing Each Implementation:
+```bash
+cd /Users/schmoll/Desktop/SumpPump
+source venv/bin/activate
+
+# Test connection
+python -c "
+import asyncio
+from src.modules.tws import tws_connection
+asyncio.run(tws_connection.connect())
+"
+```
+
+### Key Patterns to Follow:
+
+1. **Async Everything**:
+```python
+async with tws_connection.session() as tws:
+    data = await tws.get_options_chain("AAPL")
+```
+
+2. **Use ib_async Properly**:
+```python
+from ib_async import IB, Stock, Option, MarketOrder
+# NOT from ib_insync - that's the old library
+```
+
+3. **Confirmation System**:
+```python
+if not confirm_token or confirm_token != "USER_CONFIRMED":
+    return {"error": "Confirmation required"}
+```
+
+### IBKR Data Integration Points:
+Remember to implement access to:
+- Options chains with full Greeks
+- Historical data for backtesting  
+- Market scanners for opportunities
+- News feeds (Dow Jones, Reuters)
+- Option statistics (put/call ratios, IV rank)
+- Probability Lab calculations
+- Strategy Builder templates
+- Liquidity analysis tools
+
+### Next Steps After Connection:
+1. Phase 2: Options data module
+2. Phase 3: Strategy calculators (all Level 2)
+3. Phase 4: Risk management
+4. Phase 5: Wire up MCP tools
+
+Use sub-agents to work on multiple modules in parallel when appropriate. Update documentation after each module completion.
+
+**Begin with completing the TWS connection module now. This is LIVE TRADING - implement all safety checks!**
+
+---
+
+End of prompt. Ready to continue development with full context and safety awareness.

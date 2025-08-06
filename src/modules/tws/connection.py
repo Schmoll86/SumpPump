@@ -1,0 +1,416 @@
+"""
+TWS Connection Manager using ib_async.
+Handles connection, reconnection, and market data subscriptions.
+"""
+
+import asyncio
+from typing import Optional, List, Dict, Any, Set
+from datetime import datetime, date
+from contextlib import asynccontextmanager
+from decimal import Decimal
+
+from ib_async import IB, Contract, Option, Stock, MarketOrder, LimitOrder, ComboLeg, Order, util
+from loguru import logger
+
+from src.config import config
+from src.models import OptionContract, OptionRight, Greeks, Strategy
+
+
+class TWSConnectionError(Exception):
+    """Custom exception for TWS connection issues."""
+    pass
+
+
+class TWSConnection:
+    """
+    Manages TWS connection with automatic reconnection and error handling.
+    Uses ib_async for async operations.
+    """
+    
+    def __init__(self):
+        """Initialize TWS connection manager."""
+        self.ib: Optional[IB] = None
+        self.connected: bool = False
+        self.reconnect_attempts: int = 0
+        self.max_reconnect_attempts: int = 5
+        self._active_subscriptions: Set[Contract] = set()
+        
+    async def connect(self) -> None:
+        """
+        Establish connection to TWS.
+        
+        Raises:
+            TWSConnectionError: If connection fails after max attempts
+        """
+        self.ib = IB()
+        
+        while self.reconnect_attempts < self.max_reconnect_attempts:
+            try:
+                await self.ib.connectAsync(
+                    host=config.tws.host,
+                    port=config.tws.port,
+                    clientId=config.tws.client_id,
+                    timeout=config.tws.timeout,
+                    readonly=config.tws.readonly,
+                    account=config.tws.account
+                )
+                
+                self.connected = True
+                self.reconnect_attempts = 0
+                
+                # Configure market data
+                if not config.tws.use_delayed_data:
+                    self.ib.reqMarketDataType(1)  # Live data
+                else:
+                    self.ib.reqMarketDataType(3)  # Delayed data
+                    
+                logger.info(f"Connected to TWS at {config.tws.host}:{config.tws.port}")
+                return
+                
+            except Exception as e:
+                self.reconnect_attempts += 1
+                logger.error(f"Connection attempt {self.reconnect_attempts} failed: {e}")
+                
+                if self.reconnect_attempts < self.max_reconnect_attempts:
+                    await asyncio.sleep(2 ** self.reconnect_attempts)  # Exponential backoff
+                    
+        raise TWSConnectionError(f"Failed to connect after {self.max_reconnect_attempts} attempts")
+        
+    async def disconnect(self) -> None:
+        """Disconnect from TWS."""
+        if self.ib and self.connected:
+            # Cancel all active subscriptions
+            for contract in self._active_subscriptions:
+                self.ib.cancelMktData(contract)
+            self._active_subscriptions.clear()
+            
+            self.ib.disconnect()
+            self.connected = False
+            logger.info("Disconnected from TWS")
+            
+    async def ensure_connected(self) -> None:
+        """Ensure connection is active, reconnect if needed."""
+        if not self.connected or not self.ib.isConnected():
+            logger.warning("Connection lost, attempting to reconnect...")
+            await self.connect()
+            
+    @asynccontextmanager
+    async def session(self):
+        """Context manager for TWS connection."""
+        try:
+            await self.connect()
+            yield self
+        finally:
+            await self.disconnect()
+    
+    def create_stock_contract(self, symbol: str, exchange: str = 'SMART') -> Stock:
+        """
+        Create a stock contract.
+        
+        Args:
+            symbol: Stock symbol
+            exchange: Exchange (default SMART for routing)
+        
+        Returns:
+            Stock contract object
+        """
+        return Stock(symbol, exchange, 'USD')
+    
+    def create_option_contract(
+        self, 
+        symbol: str, 
+        expiry: str, 
+        strike: float, 
+        right: str,
+        exchange: str = 'SMART'
+    ) -> Option:
+        """
+        Create an option contract.
+        
+        Args:
+            symbol: Underlying symbol
+            expiry: Expiration date (YYYYMMDD format)
+            strike: Strike price
+            right: 'C' for call, 'P' for put
+            exchange: Exchange (default SMART)
+        
+        Returns:
+            Option contract object
+        """
+        return Option(symbol, expiry, strike, right, exchange)
+    
+    async def get_options_chain(self, symbol: str, expiry: Optional[str] = None) -> List[OptionContract]:
+        """
+        Fetch full options chain for a symbol with Greeks.
+        
+        Args:
+            symbol: Stock symbol
+            expiry: Optional expiration date filter (YYYY-MM-DD)
+        
+        Returns:
+            List of OptionContract objects with Greeks
+        """
+        await self.ensure_connected()
+        
+        # Get underlying stock price first
+        stock = self.create_stock_contract(symbol)
+        await self.ib.qualifyContractsAsync(stock)
+        
+        # Get stock ticker for current price
+        stock_ticker = self.ib.reqMktData(stock, '233', False, False)  # 233 = RTVolume
+        await asyncio.sleep(2)  # Wait for data
+        
+        underlying_price = stock_ticker.marketPrice()
+        if not underlying_price or underlying_price <= 0:
+            underlying_price = stock_ticker.last or stock_ticker.close
+            
+        logger.info(f"Underlying {symbol} price: {underlying_price}")
+        
+        # Get option chain parameters
+        chains = await self.ib.reqSecDefOptParamsAsync(
+            stock.symbol, '', stock.secType, stock.conId
+        )
+        
+        if not chains:
+            logger.warning(f"No option chains found for {symbol}")
+            return []
+        
+        options_list = []
+        
+        # Filter by expiry if provided
+        target_expiries = []
+        if expiry:
+            # Convert YYYY-MM-DD to YYYYMMDD
+            expiry_date = datetime.strptime(expiry, '%Y-%m-%d').strftime('%Y%m%d')
+            target_expiries = [expiry_date]
+        else:
+            # Get next 3 expiries
+            sorted_expiries = sorted(set(chain.expirations for chain in chains for chain in chain.expirations))
+            target_expiries = sorted_expiries[:3]
+        
+        for chain in chains:
+            for expiry_str in chain.expirations:
+                if expiry_str not in target_expiries:
+                    continue
+                    
+                # Get strikes around current price (±20%)
+                min_strike = underlying_price * 0.8
+                max_strike = underlying_price * 1.2
+                
+                relevant_strikes = [s for s in chain.strikes if min_strike <= s <= max_strike]
+                
+                for strike in relevant_strikes:
+                    for right in ['C', 'P']:
+                        try:
+                            # Create option contract
+                            option = self.create_option_contract(
+                                symbol, expiry_str, strike, right, chain.exchange
+                            )
+                            
+                            # Qualify contract
+                            await self.ib.qualifyContractsAsync(option)
+                            
+                            # Request market data with Greek computation
+                            ticker = self.ib.reqMktData(
+                                option, 
+                                '100,101,104,105,106',  # Greeks: Option Volume, Open Interest, IV, Delta, etc.
+                                False, 
+                                False
+                            )
+                            self._active_subscriptions.add(option)
+                            
+                            # Wait for data to populate
+                            await asyncio.sleep(0.5)
+                            
+                            # Extract data
+                            if ticker.bid and ticker.ask:
+                                # Parse expiry
+                                expiry_dt = datetime.strptime(expiry_str, '%Y%m%d')
+                                
+                                # Create Greeks object
+                                greeks = Greeks(
+                                    delta=ticker.modelGreeks.delta if ticker.modelGreeks else 0.0,
+                                    gamma=ticker.modelGreeks.gamma if ticker.modelGreeks else 0.0,
+                                    theta=ticker.modelGreeks.theta if ticker.modelGreeks else 0.0,
+                                    vega=ticker.modelGreeks.vega if ticker.modelGreeks else 0.0,
+                                    rho=ticker.modelGreeks.rho if ticker.modelGreeks else None
+                                )
+                                
+                                # Create OptionContract
+                                opt_contract = OptionContract(
+                                    symbol=symbol,
+                                    strike=strike,
+                                    expiry=expiry_dt,
+                                    right=OptionRight.CALL if right == 'C' else OptionRight.PUT,
+                                    bid=ticker.bid or 0.0,
+                                    ask=ticker.ask or 0.0,
+                                    last=ticker.last or 0.0,
+                                    volume=ticker.volume or 0,
+                                    open_interest=ticker.openInterest or 0,
+                                    iv=ticker.modelGreeks.impliedVol if ticker.modelGreeks else 0.0,
+                                    greeks=greeks,
+                                    underlying_price=underlying_price
+                                )
+                                
+                                options_list.append(opt_contract)
+                                logger.debug(f"Added option: {symbol} {expiry_str} {strike} {right}")
+                                
+                        except Exception as e:
+                            logger.warning(f"Error fetching option {symbol} {expiry_str} {strike} {right}: {e}")
+                            continue
+        
+        # Cancel market data subscriptions to free up resources
+        for contract in list(self._active_subscriptions):
+            self.ib.cancelMktData(contract)
+        self._active_subscriptions.clear()
+        
+        # Cancel stock ticker
+        self.ib.cancelMktData(stock)
+        
+        logger.info(f"Fetched {len(options_list)} option contracts for {symbol}")
+        return options_list
+    
+    async def subscribe_to_market_data(self, contract: Contract) -> Any:
+        """
+        Subscribe to real-time market data for a contract.
+        
+        Args:
+            contract: IB contract object
+        
+        Returns:
+            Ticker object for real-time updates
+        """
+        await self.ensure_connected()
+        
+        ticker = self.ib.reqMktData(contract, '', False, False)
+        self._active_subscriptions.add(contract)
+        
+        return ticker
+    
+    async def get_account_info(self) -> Dict[str, Any]:
+        """
+        Get account information including balances and positions.
+        
+        Returns:
+            Dictionary with account details
+        """
+        await self.ensure_connected()
+        
+        # Get account summary
+        account_values = await self.ib.reqAccountSummaryAsync()
+        
+        # Get positions
+        positions = await self.ib.reqPositionsAsync()
+        
+        # Get open orders
+        open_orders = await self.ib.reqOpenOrdersAsync()
+        
+        account_info = {
+            'account_id': config.tws.account,
+            'net_liquidation': 0.0,
+            'available_funds': 0.0,
+            'buying_power': 0.0,
+            'positions': [],
+            'open_orders': []
+        }
+        
+        # Parse account values
+        for av in account_values:
+            if av.tag == 'NetLiquidation':
+                account_info['net_liquidation'] = float(av.value)
+            elif av.tag == 'AvailableFunds':
+                account_info['available_funds'] = float(av.value)
+            elif av.tag == 'BuyingPower':
+                account_info['buying_power'] = float(av.value)
+        
+        # Parse positions
+        for pos in positions:
+            account_info['positions'].append({
+                'symbol': pos.contract.symbol,
+                'position': pos.position,
+                'avg_cost': pos.avgCost,
+                'contract': str(pos.contract)
+            })
+        
+        # Parse open orders
+        for order in open_orders:
+            account_info['open_orders'].append({
+                'order_id': order.orderId,
+                'symbol': order.contract.symbol,
+                'action': order.action,
+                'quantity': order.totalQuantity,
+                'order_type': order.orderType,
+                'status': order.status
+            })
+        
+        return account_info
+    
+    async def place_combo_order(self, strategy: Strategy, order_type: str = 'MKT') -> Dict[str, Any]:
+        """
+        Place a combo order for an options strategy.
+        
+        Args:
+            strategy: Strategy object with legs
+            order_type: 'MKT' for market, 'LMT' for limit
+        
+        Returns:
+            Order placement result
+        """
+        await self.ensure_connected()
+        
+        # Create combo contract
+        combo = Contract()
+        combo.symbol = strategy.legs[0].contract.symbol
+        combo.secType = 'BAG'
+        combo.currency = 'USD'
+        combo.exchange = 'SMART'
+        
+        combo_legs = []
+        for leg in strategy.legs:
+            # Create the actual IB contract for this leg
+            ib_contract = self.create_option_contract(
+                leg.contract.symbol,
+                leg.contract.expiry.strftime('%Y%m%d'),
+                leg.contract.strike,
+                leg.contract.right.value,
+                'SMART'
+            )
+            
+            # Qualify the contract
+            await self.ib.qualifyContractsAsync(ib_contract)
+            
+            # Create combo leg
+            combo_leg = ComboLeg()
+            combo_leg.conId = ib_contract.conId
+            combo_leg.ratio = leg.quantity
+            combo_leg.action = leg.action.value
+            combo_leg.exchange = 'SMART'
+            
+            combo_legs.append(combo_leg)
+        
+        combo.comboLegs = combo_legs
+        
+        # Create order
+        if order_type == 'MKT':
+            order = MarketOrder('BUY', 1)  # Quantity 1 for combo
+        else:
+            # For limit orders, use the strategy's net debit/credit
+            limit_price = abs(strategy.net_debit_credit)
+            order = LimitOrder('BUY', 1, limit_price)
+        
+        # Place the order
+        trade = self.ib.placeOrder(combo, order)
+        
+        # Wait for order to be acknowledged
+        await asyncio.sleep(2)
+        
+        return {
+            'order_id': trade.order.orderId,
+            'status': trade.orderStatus.status,
+            'strategy': strategy.name,
+            'max_loss': strategy.max_loss,
+            'max_profit': strategy.max_profit
+        }
+
+# Global connection instance
+tws_connection = TWSConnection()

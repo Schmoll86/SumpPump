@@ -1,0 +1,47 @@
+╔════════════════════════════════════════════════════════════════╗
+║                    🚨 TRADING SAFETY CARD 🚨                    ║
+╠════════════════════════════════════════════════════════════════╣
+║                                                                  ║
+║  BEFORE EVERY TRADE:                                           ║
+║  ✓ Check max loss amount                                       ║
+║  ✓ Verify breakeven points                                     ║
+║  ✓ Confirm expiration date                                     ║
+║  ✓ Review bid/ask spreads                                      ║
+║  ✓ Check for earnings/events                                   ║
+║                                                                  ║
+║  TO EXECUTE:                                                    ║
+║  • Review the full strategy details                            ║
+║  • Say: "USER_CONFIRMED" when ready                           ║
+║  • Never rush - markets will be there tomorrow                 ║
+║                                                                  ║
+║  AFTER EXECUTION:                                              ║
+║  • Set stop loss immediately                                   ║
+║  • Note your max loss in dollars                              ║
+║  • Set alerts for adjustment points                           ║
+║                                                                  ║
+║  POSITION SIZING:                                              ║
+║  • Never risk more than 5% per trade                          ║
+║  • Keep total portfolio risk under 20%                        ║
+║  • Size down in high volatility                               ║
+║                                                                  ║
+║  RED FLAGS - DO NOT TRADE IF:                                 ║
+║  ⚠️  Spreads are wider than 10% of option price               ║
+║  ⚠️  Volume is under 100 contracts                            ║
+║  ⚠️  Open interest is under 500                               ║
+║  ⚠️  Earnings within expiration (unless intended)             ║
+║  ⚠️  You don't fully understand the strategy                  ║
+║                                                                  ║
+║  ASSISTANT LIMITS:                                             ║
+║  • Cannot see your account balance                            ║
+║  • Cannot remember previous sessions                          ║
+║  • Cannot guarantee any outcome                               ║
+║  • Cannot execute without confirmation                        ║
+║                                                                  ║
+║  EMERGENCY:                                                     ║
+║  • "CLOSE ALL POSITIONS" - Manual in TWS                      ║
+║  • "CANCEL ALL ORDERS" - Manual in TWS                        ║
+║  • Assistant cannot panic close                               ║
+║                                                                  ║
+╚════════════════════════════════════════════════════════════════╝
+
+Print and keep visible while trading!

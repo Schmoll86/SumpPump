@@ -1,0 +1,62 @@
+{
+  "name": "SumpPump",
+  "version": "0.1.0",
+  "description": "IBKR Options Trading Assistant",
+  "commands": {
+    "analyze-strategy": {
+      "description": "Analyze an options strategy",
+      "contextFiles": [
+        "CLAUDE.md",
+        "docs/ai-context/project-structure.md",
+        "src/modules/strategies/CONTEXT.md"
+      ]
+    },
+    "implement-tool": {
+      "description": "Implement a new MCP tool",
+      "contextFiles": [
+        "CLAUDE.md",
+        "docs/ai-context/project-structure.md",
+        "src/mcp/CONTEXT.md"
+      ]
+    },
+    "fix-tws": {
+      "description": "Debug TWS connection issues",
+      "contextFiles": [
+        "CLAUDE.md",
+        "src/modules/tws/CONTEXT.md",
+        "src/config.py"
+      ]
+    },
+    "update-docs": {
+      "description": "Update project documentation",
+      "contextFiles": [
+        "CLAUDE.md",
+        "docs/ai-context/docs-overview.md"
+      ]
+    }
+  },
+  "hooks": {
+    "pre-execute": [],
+    "post-execute": []
+  },
+  "mcpServers": [
+    {
+      "name": "context7",
+      "enabled": true,
+      "description": "Real-time library documentation for ib_async and FastMCP"
+    },
+    {
+      "name": "gemini-assistant", 
+      "enabled": true,
+      "description": "Architecture consultation for trading system design"
+    }
+  ],
+  "contextStrategy": {
+    "autoLoad": true,
+    "maxContextSize": 50000,
+    "priorityFiles": [
+      "CLAUDE.md",
+      "src/modules/{current}/CONTEXT.md"
+    ]
+  }
+}

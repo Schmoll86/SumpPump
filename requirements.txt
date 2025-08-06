@@ -1,0 +1,45 @@
+# Core Dependencies
+ib_async>=2.0.0          # Modern async framework for IBKR API (successor to ib_insync)
+mcp[cli]>=1.4.0          # Model Context Protocol server
+python-dotenv>=1.0.0     # Environment variable management
+asyncio-mqtt>=0.16.0    # Async message handling
+
+# Data Processing
+pandas>=2.0.0            # Data manipulation
+numpy>=1.24.0           # Numerical computations
+scipy>=1.10.0           # Statistical functions
+
+# Options Analysis
+py_vollib>=1.0.1        # Black-Scholes calculations
+mibian>=0.1.3           # Options pricing models
+
+# Database & Caching
+sqlalchemy>=2.0.0       # ORM for cache database
+aiosqlite>=0.19.0       # Async SQLite support
+redis>=5.0.0            # Optional: For distributed caching
+
+# API & Networking
+aiohttp>=3.9.0          # Async HTTP client
+websockets>=12.0        # WebSocket support
+requests>=2.31.0        # HTTP library for sync operations
+
+# Utilities
+pydantic>=2.0.0         # Data validation
+loguru>=0.7.0           # Advanced logging
+python-json-logger>=2.0.0  # JSON logging format
+pytz>=2023.3            # Timezone handling
+pendulum>=3.0.0         # Better datetime handling
+
+# Development & Testing
+pytest>=7.4.0           # Testing framework
+pytest-asyncio>=0.21.0  # Async test support
+pytest-mock>=3.11.0     # Mocking support
+black>=23.0.0           # Code formatting
+mypy>=1.5.0            # Type checking
+ruff>=0.1.0            # Fast linting
+
+# Optional: Enhanced Features
+matplotlib>=3.7.0       # Plotting for analysis
+plotly>=5.17.0         # Interactive charts
+rich>=13.5.0           # Beautiful terminal output
+typer>=0.9.0           # CLI interface building

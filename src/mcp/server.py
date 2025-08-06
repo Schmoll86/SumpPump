@@ -1502,6 +1502,556 @@ async def roll_option_position(
         }
 
 
+# ============================================================================
+# ESSENTIAL TRADING TOOLS
+# ============================================================================
+
+@mcp.tool(name="trade_get_quote")
+async def get_quote(
+    symbol: str,
+    asset_type: str = 'STK'  # 'STK' for stock, 'OPT' for option
+) -> Dict[str, Any]:
+    """
+    [TRADING] Get real-time quotes from IBKR for stocks/ETFs.
+    Live market data for trading decisions, not file quotes.
+    
+    Args:
+        symbol: Stock/ETF symbol (e.g., 'SPY', 'AAPL')
+        asset_type: 'STK' for stocks/ETFs, 'OPT' for options
+    
+    Returns:
+        Current price, bid/ask, volume, day change, and market data
+    """
+    logger.info(f"Fetching quote for {symbol}")
+    
+    try:
+        await ensure_tws_connected()
+        
+        # Create contract
+        if asset_type == 'STK':
+            contract = Stock(symbol, 'SMART', 'USD')
+        else:
+            return {
+                'error': 'Option quotes need strike and expiry',
+                'message': 'Use trade_get_options_chain for option quotes'
+            }
+        
+        # Qualify contract
+        qualified = await tws_connection.ib.qualifyContractsAsync(contract)
+        if not qualified:
+            return {
+                'error': 'Symbol not found',
+                'message': f'Could not find {symbol}',
+                'status': 'failed'
+            }
+        contract = qualified[0]
+        
+        # Request market data snapshot
+        ticker = tws_connection.ib.reqMktData(contract, '', snapshot=True)
+        
+        # Wait for data to populate
+        for _ in range(20):  # Try for up to 2 seconds
+            await asyncio.sleep(0.1)
+            if ticker.last and ticker.last > 0:
+                break
+        
+        # Try reqTickers for more complete data
+        tickers = await tws_connection.ib.reqTickersAsync(contract)
+        if tickers:
+            ticker = tickers[0]
+        
+        # Calculate day change
+        day_change = None
+        day_change_pct = None
+        if ticker.close and ticker.last:
+            day_change = ticker.last - ticker.close
+            day_change_pct = (day_change / ticker.close) * 100
+        
+        # Build response
+        quote_data = {
+            'status': 'success',
+            'symbol': symbol,
+            'last': ticker.last or ticker.marketPrice() or 0,
+            'bid': ticker.bid if ticker.bid and ticker.bid > 0 else None,
+            'ask': ticker.ask if ticker.ask and ticker.ask > 0 else None,
+            'bid_size': ticker.bidSize if ticker.bidSize else None,
+            'ask_size': ticker.askSize if ticker.askSize else None,
+            'volume': ticker.volume if ticker.volume else None,
+            'open': ticker.open if ticker.open else None,
+            'high': ticker.high if ticker.high else None,
+            'low': ticker.low if ticker.low else None,
+            'close': ticker.close if ticker.close else None,
+            'previous_close': ticker.close,
+            'day_change': day_change,
+            'day_change_percent': day_change_pct,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Add spread calculation
+        if quote_data['bid'] and quote_data['ask']:
+            quote_data['spread'] = quote_data['ask'] - quote_data['bid']
+            quote_data['spread_percent'] = (quote_data['spread'] / quote_data['ask']) * 100
+        
+        # Cancel market data subscription
+        tws_connection.ib.cancelMktData(contract)
+        
+        return quote_data
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch quote for {symbol}: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': f'Could not fetch quote for {symbol}. Market may be closed or symbol invalid.'
+        }
+
+
+@mcp.tool(name="trade_get_account_summary")
+async def get_account_summary() -> Dict[str, Any]:
+    """
+    [TRADING] Get IBKR account balance, buying power, and margin info.
+    Trading account summary, not system account information.
+    
+    Returns:
+        Account summary with balance, buying power, margin cushion, and P&L
+    """
+    logger.info("Fetching account information")
+    
+    try:
+        await ensure_tws_connected()
+        
+        # Get account values and summary
+        account_values = tws_connection.ib.accountValues()
+        account_summary = tws_connection.ib.accountSummary()
+        
+        # Parse into dictionaries
+        values_dict = {av.tag: {'value': av.value, 'currency': av.currency, 'account': av.account} for av in account_values}
+        summary_dict = {item.tag: {'value': item.value, 'currency': item.currency} for item in account_summary}
+        
+        # Extract key metrics
+        account_info = {
+            'status': 'success',
+            'account': values_dict.get('AccountCode', {}).get('value', 'Unknown'),
+            
+            # Core balances
+            'net_liquidation': float(summary_dict.get('NetLiquidation', {}).get('value', 0)),
+            'total_cash': float(summary_dict.get('TotalCashValue', {}).get('value', 0)),
+            'settled_cash': float(values_dict.get('SettledCash', {}).get('value', 0)),
+            
+            # Buying power
+            'buying_power': float(summary_dict.get('BuyingPower', {}).get('value', 0)),
+            'excess_liquidity': float(summary_dict.get('ExcessLiquidity', {}).get('value', 0)),
+            
+            # Margin information
+            'maintenance_margin': float(summary_dict.get('MaintMarginReq', {}).get('value', 0)),
+            'initial_margin': float(summary_dict.get('InitMarginReq', {}).get('value', 0)),
+            'margin_cushion': float(summary_dict.get('Cushion', {}).get('value', 0)),
+            'sma': float(values_dict.get('SMA', {}).get('value', 0)),
+            
+            # P&L
+            'daily_pnl': float(summary_dict.get('DailyPnL', {}).get('value', 0)),
+            'unrealized_pnl': float(summary_dict.get('UnrealizedPnL', {}).get('value', 0)),
+            'realized_pnl': float(summary_dict.get('RealizedPnL', {}).get('value', 0)),
+            
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Calculate margin usage percentage
+        if account_info['net_liquidation'] > 0:
+            account_info['margin_usage_percent'] = (account_info['maintenance_margin'] / account_info['net_liquidation']) * 100
+        else:
+            account_info['margin_usage_percent'] = 0
+        
+        # Add margin warnings
+        margin_warnings = []
+        if account_info['margin_cushion'] < 0.05:
+            margin_warnings.append("WARNING: Low margin cushion - approaching margin call territory")
+        if account_info['margin_usage_percent'] > 80:
+            margin_warnings.append(f"WARNING: High margin usage ({account_info['margin_usage_percent']:.1f}%)")
+        if account_info['excess_liquidity'] < 1000:
+            margin_warnings.append("WARNING: Low excess liquidity")
+        
+        account_info['warnings'] = margin_warnings
+        
+        return account_info
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch account info: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': 'Could not retrieve account information. Check TWS connection.'
+        }
+
+
+@mcp.tool(name="trade_check_margin_risk")
+async def check_margin_risk() -> Dict[str, Any]:
+    """
+    [TRADING] Check IBKR margin status and margin call risk.
+    Trading risk assessment, not system margin checks.
+    
+    Returns:
+        Margin status with risk levels and recommendations
+    """
+    logger.info("Checking margin status and margin call risk")
+    
+    try:
+        # Get account info first
+        account_info = await get_account_summary()
+        if account_info.get('status') != 'success':
+            return account_info
+        
+        # Calculate margin health metrics
+        net_liq = account_info['net_liquidation']
+        cushion = account_info['margin_cushion']
+        excess_liq = account_info['excess_liquidity']
+        buying_power = account_info['buying_power']
+        
+        # Determine risk level
+        if cushion < 0:
+            risk_level = 'MARGIN_CALL'
+            risk_color = 'RED'
+        elif cushion < 0.05:
+            risk_level = 'CRITICAL'
+            risk_color = 'RED'
+        elif cushion < 0.15:
+            risk_level = 'HIGH' 
+            risk_color = 'ORANGE'
+        elif cushion < 0.30:
+            risk_level = 'MODERATE'
+            risk_color = 'YELLOW'
+        else:
+            risk_level = 'LOW'
+            risk_color = 'GREEN'
+        
+        # Calculate loss buffer
+        loss_before_margin_call = excess_liq
+        loss_percentage_before_call = (loss_before_margin_call / net_liq) * 100 if net_liq > 0 else 0
+        
+        # Build recommendations
+        recommendations = []
+        if risk_level in ['MARGIN_CALL', 'CRITICAL']:
+            recommendations.extend([
+                "URGENT: Close or reduce positions immediately",
+                "Consider depositing additional funds",
+                "Avoid opening new positions"
+            ])
+        elif risk_level == 'HIGH':
+            recommendations.extend([
+                "Reduce position sizes to lower margin usage",
+                "Avoid high-margin strategies",
+                "Consider taking profits on winning positions"
+            ])
+        elif risk_level == 'MODERATE':
+            recommendations.extend([
+                "Monitor positions closely",
+                "Be selective with new trades",
+                "Keep some cash reserve"
+            ])
+        else:
+            recommendations.extend([
+                "Margin levels are healthy",
+                "Safe to trade within risk parameters"
+            ])
+        
+        return {
+            'status': 'success',
+            'risk_level': risk_level,
+            'risk_color': risk_color,
+            'margin_cushion_percent': cushion * 100,
+            'margin_usage_percent': account_info['margin_usage_percent'],
+            'excess_liquidity': excess_liq,
+            'loss_before_margin_call': loss_before_margin_call,
+            'loss_percentage_before_call': loss_percentage_before_call,
+            'net_liquidation': net_liq,
+            'buying_power': buying_power,
+            'position_sizing': {
+                'conservative': buying_power * 0.25,
+                'moderate': buying_power * 0.5,
+                'aggressive': buying_power * 0.75
+            },
+            'recommendations': recommendations,
+            'summary': f"{risk_level} risk: {cushion:.1%} cushion, ${loss_before_margin_call:,.0f} buffer before margin call",
+            'timestamp': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to check margin status: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': 'Could not check margin status. Check TWS connection.'
+        }
+
+
+@mcp.tool(name="trade_get_price_history")
+async def get_price_history(
+    symbol: str,
+    duration: str = '5 d',  # '1 d', '5 d', '1 M', '3 M', '1 Y'
+    bar_size: str = '1 hour',  # '1 min', '5 mins', '15 mins', '1 hour', '1 day'
+    data_type: str = 'TRADES'  # 'TRADES', 'MIDPOINT', 'BID', 'ASK'
+) -> Dict[str, Any]:
+    """
+    [TRADING] Get IBKR historical price data for technical analysis.
+    Stock price history for trading, not file history.
+    
+    Args:
+        symbol: Stock/ETF symbol
+        duration: Time period ('1 d', '5 d', '1 M', '3 M', '1 Y')
+        bar_size: Bar size ('1 min', '5 mins', '15 mins', '1 hour', '1 day')
+        data_type: Type of data ('TRADES', 'MIDPOINT', 'BID', 'ASK')
+    
+    Returns:
+        Historical bars with OHLCV data and basic statistics
+    """
+    logger.info(f"Fetching {duration} price history for {symbol}")
+    
+    try:
+        await ensure_tws_connected()
+        
+        # Create and qualify contract
+        contract = Stock(symbol, 'SMART', 'USD')
+        qualified = await tws_connection.ib.qualifyContractsAsync(contract)
+        if not qualified:
+            return {
+                'error': 'Symbol not found',
+                'message': f'Could not find {symbol}',
+                'status': 'failed'
+            }
+        contract = qualified[0]
+        
+        # Request historical data
+        bars = await tws_connection.ib.reqHistoricalDataAsync(
+            contract,
+            endDateTime='',
+            durationStr=duration,
+            barSizeSetting=bar_size,
+            whatToShow=data_type,
+            useRTH=True,
+            formatDate=1
+        )
+        
+        if not bars:
+            return {
+                'error': 'No data available',
+                'message': f'No historical data available for {symbol}',
+                'status': 'failed'
+            }
+        
+        # Convert bars to list
+        price_data = []
+        for bar in bars:
+            price_data.append({
+                'time': bar.date.isoformat() if hasattr(bar.date, 'isoformat') else str(bar.date),
+                'open': float(bar.open),
+                'high': float(bar.high),
+                'low': float(bar.low),
+                'close': float(bar.close),
+                'volume': int(bar.volume) if bar.volume else 0
+            })
+        
+        # Calculate statistics
+        closes = [bar['close'] for bar in price_data]
+        current_price = closes[-1]
+        price_change = current_price - closes[0]
+        price_change_pct = (price_change / closes[0]) * 100
+        
+        # Simple moving averages
+        sma_20 = sum(closes[-20:]) / min(20, len(closes))
+        sma_50 = sum(closes[-50:]) / min(50, len(closes)) if len(closes) >= 50 else None
+        
+        return {
+            'status': 'success',
+            'symbol': symbol,
+            'duration': duration,
+            'bar_size': bar_size,
+            'bar_count': len(price_data),
+            'bars': price_data,
+            'current_price': current_price,
+            'price_change': price_change,
+            'price_change_percent': price_change_pct,
+            'period_high': max(bar['high'] for bar in price_data),
+            'period_low': min(bar['low'] for bar in price_data),
+            'sma_20': sma_20,
+            'sma_50': sma_50,
+            'trend': 'UPTREND' if current_price > sma_20 else 'DOWNTREND',
+            'timestamp': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch price history for {symbol}: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': f'Could not fetch price history for {symbol}. Check symbol and parameters.'
+        }
+
+
+@mcp.tool(name="trade_get_volatility_analysis")
+async def get_volatility_analysis(symbol: str) -> Dict[str, Any]:
+    """
+    [TRADING] Get IBKR volatility metrics with IV rank and HV analysis.
+    Options volatility for trading, not system volatility.
+    
+    Args:
+        symbol: Stock/ETF symbol
+    
+    Returns:
+        IV metrics, HV, IV rank, and volatility recommendations
+    """
+    logger.info(f"Fetching volatility metrics for {symbol}")
+    
+    try:
+        await ensure_tws_connected()
+        
+        # Get historical volatility from price history
+        history = await get_price_history(symbol, duration='3 M', bar_size='1 day')
+        if history.get('status') != 'success':
+            return history
+        
+        # Calculate historical volatility
+        closes = [bar['close'] for bar in history['bars']]
+        if len(closes) > 1:
+            returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
+            avg_return = sum(returns) / len(returns)
+            variance = sum((r - avg_return) ** 2 for r in returns) / len(returns)
+            daily_volatility = (variance ** 0.5)
+            hv_30 = daily_volatility * (252 ** 0.5) * 100  # Annualized
+        else:
+            hv_30 = 0
+        
+        # Get current quote for ATM strike
+        quote = await get_quote(symbol)
+        current_price = quote.get('last', 0)
+        
+        # Get options chain for IV
+        from src.modules.data import options_data
+        await options_data.initialize()
+        chain = await options_data.fetch_chain(symbol, None)
+        
+        # Calculate current IV from ATM options
+        current_iv = 0
+        if chain and current_price > 0:
+            atm_options = []
+            for opt in chain:
+                strike_diff = abs(opt.strike - current_price)
+                if strike_diff < current_price * 0.02:  # Within 2%
+                    if opt.iv and opt.iv > 0:
+                        atm_options.append(opt.iv)
+            
+            if atm_options:
+                current_iv = sum(atm_options) / len(atm_options) * 100
+        
+        # Calculate IV rank (simplified estimate)
+        estimated_iv_low = hv_30 * 0.8
+        estimated_iv_high = hv_30 * 2.0
+        
+        if estimated_iv_high > estimated_iv_low:
+            iv_rank = ((current_iv - estimated_iv_low) / (estimated_iv_high - estimated_iv_low)) * 100
+        else:
+            iv_rank = 50
+        
+        iv_rank = max(0, min(100, iv_rank))  # Clamp between 0-100
+        
+        # Determine IV state and recommendation
+        if iv_rank > 80:
+            iv_state = 'VERY_HIGH'
+            recommendation = 'Good for selling premium (credit spreads, covered calls)'
+        elif iv_rank > 50:
+            iv_state = 'HIGH'
+            recommendation = 'Consider premium selling strategies'
+        elif iv_rank > 20:
+            iv_state = 'NORMAL'
+            recommendation = 'Neutral - both buying and selling viable'
+        else:
+            iv_state = 'LOW'
+            recommendation = 'Good for buying options (debit spreads, long options)'
+        
+        return {
+            'status': 'success',
+            'symbol': symbol,
+            'implied_volatility': round(current_iv, 2),
+            'historical_volatility_30d': round(hv_30, 2),
+            'iv_hv_ratio': round(current_iv / hv_30 if hv_30 > 0 else 1, 2),
+            'iv_rank': round(iv_rank, 1),
+            'iv_state': iv_state,
+            'recommendation': recommendation,
+            'edge': 'SELL_VOLATILITY' if iv_rank > 70 else 'BUY_VOLATILITY' if iv_rank < 30 else 'NEUTRAL',
+            'timestamp': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch volatility metrics for {symbol}: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': f'Could not fetch volatility metrics for {symbol}.'
+        }
+
+
+@mcp.tool(name="trade_get_watchlist_quotes")
+async def get_watchlist_quotes(symbols: List[str]) -> Dict[str, Any]:
+    """
+    [TRADING] Get IBKR quotes for multiple symbols (watchlist).
+    Multiple stock quotes for portfolio monitoring, not file watching.
+    
+    Args:
+        symbols: List of stock/ETF symbols
+    
+    Returns:
+        Quotes for all symbols with summary statistics
+    """
+    logger.info(f"Fetching quotes for {len(symbols)} symbols")
+    
+    try:
+        await ensure_tws_connected()
+        
+        quotes = []
+        errors = []
+        
+        # Fetch each quote
+        for symbol in symbols:
+            try:
+                quote = await get_quote(symbol)
+                if quote.get('status') == 'success':
+                    quotes.append(quote)
+                else:
+                    errors.append({'symbol': symbol, 'error': quote.get('error', 'Unknown error')})
+            except Exception as e:
+                errors.append({'symbol': symbol, 'error': str(e)})
+        
+        # Calculate summary statistics
+        gainers = sorted([q for q in quotes if q.get('day_change_percent', 0) > 0], 
+                        key=lambda x: x.get('day_change_percent', 0), reverse=True)[:3]
+        losers = sorted([q for q in quotes if q.get('day_change_percent', 0) < 0], 
+                       key=lambda x: x.get('day_change_percent', 0))[:3]
+        most_active = sorted([q for q in quotes if q.get('volume', 0) > 0], 
+                            key=lambda x: x.get('volume', 0), reverse=True)[:3]
+        
+        return {
+            'status': 'success',
+            'quotes': quotes,
+            'symbols_requested': len(symbols),
+            'symbols_returned': len(quotes),
+            'errors': errors,
+            'summary': {
+                'gainers': [q['symbol'] for q in gainers],
+                'losers': [q['symbol'] for q in losers],
+                'most_active': [q['symbol'] for q in most_active],
+                'average_change_percent': sum(q.get('day_change_percent', 0) for q in quotes) / len(quotes) if quotes else 0
+            },
+            'timestamp': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch multiple quotes: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': 'Could not fetch quotes. Check TWS connection.'
+        }
+
+
 # Initialize TWS connection when needed
 async def ensure_tws_connected():
     """Ensure TWS connection is established."""

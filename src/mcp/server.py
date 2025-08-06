@@ -391,9 +391,43 @@ async def execute_trade(
         
         logger.warning(f"EXECUTING TRADE: {pre_execution_display}")
         
-        # Build and submit order
-        from src.models import Strategy as StrategyModel
-        strategy_obj = StrategyModel(**strategy)
+        # Build and submit order - construct Strategy object properly
+        from src.models import Strategy as StrategyModel, StrategyType, OptionLeg
+        
+        # Create Strategy object from the strategy data
+        try:
+            # Get strategy type
+            strategy_type = StrategyType(strategy.get('strategy_type', 'long_call'))
+            
+            # Extract legs if they exist, otherwise create basic structure
+            legs = strategy.get('legs', [])
+            if not legs:
+                # This is a simplified strategy without legs - we need to rebuild it
+                logger.warning("Strategy missing legs - execution needs to be called after calculate_strategy")
+                return {
+                    'error': 'Strategy incomplete',
+                    'message': 'You must first calculate the strategy before executing. Please call calculate_strategy() first.',
+                    'required_flow': '1. get_options_chain() → 2. calculate_strategy() → 3. execute_trade()'
+                }
+            
+            strategy_obj = StrategyModel(
+                name=strategy.get('name', f"{strategy_type.value} Strategy"),
+                type=strategy_type,
+                legs=legs,
+                max_profit=strategy.get('max_profit', float('inf')),
+                max_loss=strategy.get('max_loss', 0.0),
+                breakeven=strategy.get('breakeven', []),
+                current_value=strategy.get('current_value', 0.0),
+                probability_profit=strategy.get('probability_profit'),
+                required_capital=strategy.get('required_capital', 0.0)
+            )
+        except Exception as e:
+            logger.error(f"Failed to construct Strategy object: {e}")
+            return {
+                'error': 'Strategy construction failed',
+                'message': str(e),
+                'hint': 'Make sure you call calculate_strategy() first to build a complete strategy'
+            }
         
         # Validate with risk module
         await risk_validator.validate_trade_execution(

@@ -166,11 +166,23 @@ class RiskValidator:
         }
         
         try:
-            account_value = account_info.get('total_value', 0)
-            available_margin = account_info.get('available_margin', 0)
+            # Get account values from TWS connection format
+            account_value = account_info.get('net_liquidation', 0)
+            available_funds = account_info.get('available_funds', 0)
+            buying_power = account_info.get('buying_power', 0)
+            
+            # Log account info for debugging
+            logger.info(f"Risk validation - Account value: ${account_value:,.2f}, "
+                       f"Available funds: ${available_funds:,.2f}, "
+                       f"Buying power: ${buying_power:,.2f}")
             
             if account_value <= 0:
-                raise InvalidStrategyError("Invalid account value for risk validation")
+                # If account value is 0, it might be a connection issue
+                logger.warning(f"Account value is 0 - checking if TWS is connected properly")
+                if 'error' in account_info:
+                    raise InvalidStrategyError(f"TWS connection error: {account_info['error']}")
+                else:
+                    raise InvalidStrategyError("Invalid account value for risk validation - check TWS connection")
                 
             # Validate max loss
             max_loss = abs(strategy.max_loss)
@@ -194,9 +206,9 @@ class RiskValidator:
                 validation_result['is_valid'] = False
                 
             # Check margin requirements
-            if required_capital > available_margin:
+            if required_capital > available_funds:
                 validation_result['warnings'].append(
-                    f"Required capital ${required_capital:,.2f} may exceed available margin"
+                    f"Required capital ${required_capital:,.2f} may exceed available funds"
                 )
                 
             # Validate breakeven points
@@ -309,7 +321,7 @@ class RiskValidator:
     async def check_margin_requirements(
         self, 
         strategy: Strategy, 
-        available_margin: float,
+        available_funds: float,
         account_type: str = "margin"
     ) -> bool:
         """
@@ -317,7 +329,7 @@ class RiskValidator:
         
         Args:
             strategy: Options strategy
-            available_margin: Available margin in account
+            available_funds: Available funds in account
             account_type: Type of account (cash, margin, portfolio_margin)
             
         Returns:
@@ -340,21 +352,21 @@ class RiskValidator:
                     premium = leg.contract.ask * leg.quantity * 100
                     cash_requirement += premium
                     
-            if cash_requirement > available_margin:
+            if cash_requirement > available_funds:
                 raise InsufficientMarginError(
                     f"Insufficient cash: ${cash_requirement:,.2f} required, "
-                    f"${available_margin:,.2f} available"
+                    f"${available_funds:,.2f} available"
                 )
                 
-        elif required_with_buffer > available_margin:
+        elif required_with_buffer > available_funds:
             raise InsufficientMarginError(
                 f"Insufficient margin: ${required_with_buffer:,.2f} required "
-                f"(including 20% buffer), ${available_margin:,.2f} available"
+                f"(including 20% buffer), ${available_funds:,.2f} available"
             )
             
         logger.info(
             f"Margin check passed: ${required_margin:,.2f} required, "
-            f"${available_margin:,.2f} available"
+            f"${available_funds:,.2f} available"
         )
         return True
 
@@ -386,9 +398,9 @@ class RiskValidator:
             # CRITICAL: Always validate confirmation first
             await self.validate_confirmation(confirm_token)
             
-            # Extract account info
-            account_value = account_info.get('total_value', 0)
-            available_margin = account_info.get('available_margin', 0)
+            # Extract account info from TWS connection format
+            account_value = account_info.get('net_liquidation', 0)
+            available_funds = account_info.get('available_funds', 0)
             account_type = account_info.get('account_type', 'margin')
             
             # Validate strategy risk
@@ -409,7 +421,7 @@ class RiskValidator:
             # Check margin requirements
             await self.check_margin_requirements(
                 strategy, 
-                available_margin, 
+                available_funds, 
                 account_type
             )
             

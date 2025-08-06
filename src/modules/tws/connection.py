@@ -363,56 +363,93 @@ class TWSConnection:
         Returns:
             Dictionary with account details
         """
-        await self.ensure_connected()
-        
-        # Get account summary
-        account_values = await self.ib.reqAccountSummaryAsync()
-        
-        # Get positions
-        positions = await self.ib.reqPositionsAsync()
-        
-        # Get open orders
-        open_orders = await self.ib.reqOpenOrdersAsync()
-        
-        account_info = {
-            'account_id': config.tws.account,
-            'net_liquidation': 0.0,
-            'available_funds': 0.0,
-            'buying_power': 0.0,
-            'positions': [],
-            'open_orders': []
-        }
-        
-        # Parse account values
-        for av in account_values:
-            if av.tag == 'NetLiquidation':
-                account_info['net_liquidation'] = float(av.value)
-            elif av.tag == 'AvailableFunds':
-                account_info['available_funds'] = float(av.value)
-            elif av.tag == 'BuyingPower':
-                account_info['buying_power'] = float(av.value)
-        
-        # Parse positions
-        for pos in positions:
-            account_info['positions'].append({
-                'symbol': pos.contract.symbol,
-                'position': pos.position,
-                'avg_cost': pos.avgCost,
-                'contract': str(pos.contract)
-            })
-        
-        # Parse open orders
-        for order in open_orders:
-            account_info['open_orders'].append({
-                'order_id': order.orderId,
-                'symbol': order.contract.symbol,
-                'action': order.action,
-                'quantity': order.totalQuantity,
-                'order_type': order.orderType,
-                'status': order.status
-            })
-        
-        return account_info
+        try:
+            await self.ensure_connected()
+            
+            if not self.ib.isConnected():
+                logger.error("TWS not connected when requesting account info")
+                return {
+                    'error': 'TWS not connected',
+                    'account_id': config.tws.account,
+                    'net_liquidation': 0.0,
+                    'available_funds': 0.0,
+                    'buying_power': 0.0,
+                    'positions': [],
+                    'open_orders': []
+                }
+            
+            logger.info("Fetching account information from TWS")
+            
+            # Get account summary
+            account_values = await self.ib.reqAccountSummaryAsync()
+            logger.info(f"Retrieved {len(account_values)} account values")
+            
+            # Get positions
+            positions = await self.ib.reqPositionsAsync()
+            logger.info(f"Retrieved {len(positions)} positions")
+            
+            # Get open orders  
+            open_orders = await self.ib.reqOpenOrdersAsync()
+            logger.info(f"Retrieved {len(open_orders)} open orders")
+            
+            account_info = {
+                'account_id': config.tws.account,
+                'net_liquidation': 0.0,
+                'available_funds': 0.0,
+                'buying_power': 0.0,
+                'positions': [],
+                'open_orders': []
+            }
+            
+            # Parse account values
+            for av in account_values:
+                logger.debug(f"Account value: {av.tag} = {av.value}")
+                if av.tag == 'NetLiquidation':
+                    account_info['net_liquidation'] = float(av.value)
+                elif av.tag == 'AvailableFunds':
+                    account_info['available_funds'] = float(av.value)
+                elif av.tag == 'BuyingPower':
+                    account_info['buying_power'] = float(av.value)
+            
+            logger.info(f"Account info: NetLiq=${account_info['net_liquidation']:,.2f}, "
+                       f"Available=${account_info['available_funds']:,.2f}, "
+                       f"BuyingPower=${account_info['buying_power']:,.2f}")
+            
+            return account_info
+            
+        except Exception as e:
+            logger.error(f"Error getting account info: {e}")
+            return {
+                'error': str(e),
+                'account_id': config.tws.account,
+                'net_liquidation': 0.0,
+                'available_funds': 0.0,
+                'buying_power': 0.0,
+                'positions': [],
+                'open_orders': []
+            }
+            
+            # Parse positions
+            for pos in positions:
+                account_info['positions'].append({
+                    'symbol': pos.contract.symbol,
+                    'position': pos.position,
+                    'avg_cost': pos.avgCost,
+                    'contract': str(pos.contract)
+                })
+            
+            # Parse open orders
+            for order in open_orders:
+                account_info['open_orders'].append({
+                    'order_id': order.orderId,
+                    'symbol': order.contract.symbol,
+                    'action': order.action,
+                    'quantity': order.totalQuantity,
+                    'order_type': order.orderType,
+                    'status': order.status
+                })
+            
+            return account_info
     
     async def place_combo_order(self, strategy: Strategy, order_type: str = 'MKT') -> Dict[str, Any]:
         """

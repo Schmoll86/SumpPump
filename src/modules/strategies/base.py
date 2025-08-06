@@ -409,23 +409,33 @@ class BaseStrategy(ABC):
         try:
             min_price, max_price = price_range
             
-            # Define function to find zero
-            async def pnl_function(price):
-                return await self.calculate_pnl(price)
-            
-            # Test endpoints
-            min_pnl = asyncio.run(pnl_function(min_price))
-            max_pnl = asyncio.run(pnl_function(max_price))
+            # Test endpoints - we're already in async context
+            min_pnl = await self.calculate_pnl(min_price)
+            max_pnl = await self.calculate_pnl(max_price)
             
             # Check if there's a sign change (root exists)
             if min_pnl * max_pnl > 0:
                 return None
             
-            # Use Brent's method to find root
-            def sync_pnl_function(price):
-                return asyncio.run(pnl_function(price))
+            # Use bisection method for async compatibility
+            # (Brent's method requires sync function, bisection works with async)
+            left, right = min_price, max_price
             
-            breakeven = brentq(sync_pnl_function, min_price, max_price, xtol=tolerance)
+            while abs(right - left) > tolerance:
+                mid = (left + right) / 2
+                mid_pnl = await self.calculate_pnl(mid)
+                
+                if abs(mid_pnl) < tolerance:
+                    return mid
+                
+                left_pnl = await self.calculate_pnl(left)
+                
+                if mid_pnl * left_pnl < 0:
+                    right = mid
+                else:
+                    left = mid
+            
+            breakeven = (left + right) / 2
             return breakeven
             
         except Exception as e:

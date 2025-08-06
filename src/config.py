@@ -18,7 +18,7 @@ class TWSConfig:
     """TWS connection configuration."""
     host: str = os.getenv("TWS_HOST", "127.0.0.1")
     port: int = int(os.getenv("TWS_PORT", "7497"))
-    client_id: int = int(os.getenv("TWS_CLIENT_ID", "1"))
+    client_id: int = int(os.getenv("TWS_CLIENT_ID", "5"))  # Use 5 to avoid conflicts with paper trading
     account: Optional[str] = os.getenv("TWS_ACCOUNT")
     timeout: float = 30.0
     
@@ -65,14 +65,45 @@ class LogConfig:
 
 @dataclass
 class DataConfig:
-    """Data and news configuration."""
+    """Enhanced data and news configuration for all data feeds."""
     historical_data_duration: str = os.getenv("HISTORICAL_DATA_DURATION", "30 D")
     bar_size_setting: str = os.getenv("BAR_SIZE_SETTING", "1 hour")
     subscribe_to_news: bool = os.getenv("SUBSCRIBE_TO_NEWS", "true").lower() == "true"
     
+    # Level 2 Depth Configuration
+    use_level2_depth: bool = os.getenv("USE_LEVEL2_DEPTH", "true").lower() == "true"
+    depth_provider: str = os.getenv("DEPTH_PROVIDER", "IEX")
+    max_depth_levels: int = int(os.getenv("MAX_DEPTH_LEVELS", "10"))
+    use_smart_depth: bool = os.getenv("USE_SMART_DEPTH", "true").lower() == "true"
+    
+    # Index Trading Configuration
+    enable_index_trading: bool = os.getenv("ENABLE_INDEX_TRADING", "true").lower() == "true"
+    index_exchanges: str = os.getenv("INDEX_EXCHANGES", "CBOE,CME,NASDAQ")
+    
+    # Cryptocurrency Configuration
+    use_crypto_feed: bool = os.getenv("USE_CRYPTO_FEED", "false").lower() == "true"
+    crypto_exchange: str = os.getenv("CRYPTO_EXCHANGE", "PAXOS")
+    crypto_symbols: str = os.getenv("CRYPTO_SYMBOLS", "BTC,ETH,SOL")
+    
+    # Forex Configuration
+    use_fx_feed: bool = os.getenv("USE_FX_FEED", "false").lower() == "true"
+    fx_exchange: str = os.getenv("FX_EXCHANGE", "IDEALPRO")
+    fx_pairs: str = os.getenv("FX_PAIRS", "EURUSD,GBPUSD,USDJPY")
+    
+    # Bond Configuration
+    use_bond_feed: bool = os.getenv("USE_BOND_FEED", "false").lower() == "true"
+    
+    # News Configuration
+    news_providers: str = os.getenv("NEWS_PROVIDERS", "dow_jones,reuters,benzinga,fly_on_the_wall")
+    use_realtime_news: bool = os.getenv("USE_REALTIME_NEWS", "true").lower() == "true"
+    news_bulletin_subscription: bool = os.getenv("NEWS_BULLETIN_SUBSCRIPTION", "true").lower() == "true"
+    
     def __post_init__(self):
-        """Initialize news providers list after dataclass init."""
-        self.news_providers = os.getenv("NEWS_PROVIDERS", "dow_jones,reuters").split(",")
+        """Initialize lists after dataclass init."""
+        self.news_providers_list = self.news_providers.split(",") if self.news_providers else []
+        self.index_exchanges_list = self.index_exchanges.split(",") if self.index_exchanges else []
+        self.crypto_symbols_list = self.crypto_symbols.split(",") if self.crypto_symbols else []
+        self.fx_pairs_list = self.fx_pairs.split(",") if self.fx_pairs else []
 
 class Config:
     """Main configuration container."""

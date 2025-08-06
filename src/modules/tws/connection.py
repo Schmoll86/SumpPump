@@ -17,36 +17,9 @@ from src.config import config
 from src.models import OptionContract, OptionRight, Greeks, Strategy
 
 
-def _safe_sleep(duration: float):
-    """Sleep that handles both async and sync contexts."""
-    try:
-        # Check if we're in an async context
-        loop = asyncio.get_running_loop()
-        if loop.is_running():
-            # We're in a running event loop, use sync sleep
-            import time
-            time.sleep(duration)
-        else:
-            # No running loop, this shouldn't happen in async context
-            import time
-            time.sleep(duration)
-    except RuntimeError:
-        # No event loop running, use sync sleep
-        import time
-        time.sleep(duration)
-
-
 async def _async_safe_sleep(duration: float):
-    """Async sleep that gracefully falls back to sync when needed."""
-    try:
-        await asyncio.sleep(duration)
-    except RuntimeError as e:
-        if "This event loop is already running" in str(e):
-            # Fall back to synchronous sleep
-            import time
-            time.sleep(duration)
-        else:
-            raise
+    """Async sleep - always use asyncio.sleep in async context."""
+    await asyncio.sleep(duration)
 
 
 class TWSConnectionError(Exception):
@@ -71,22 +44,77 @@ class TWSConnection:
         self.max_reconnect_attempts: int = 5
         self._active_subscriptions: Set[Contract] = set()
         self._subscription_count: int = 0
+        self._monitor_task: Optional[asyncio.Task] = None
+        self._current_client_id: Optional[int] = None
         
+    async def _find_available_client_id(self) -> int:
+        """
+        Find an available client ID by trying different IDs.
+        
+        Returns:
+            Available client ID
+        """
+        # Start with configured ID or 5 as default
+        base_id = config.tws.client_id if config.tws.client_id else 5
+        
+        # Try base ID and then increments
+        for offset in range(20):  # Try up to 20 different IDs
+            test_id = base_id + offset
+            
+            try:
+                test_ib = IB()
+                # Try quick connect with short timeout
+                await asyncio.wait_for(
+                    test_ib.connectAsync(
+                        host=config.tws.host,
+                        port=config.tws.port,
+                        clientId=test_id,
+                        timeout=5
+                    ),
+                    timeout=6
+                )
+                
+                # Success! This ID works
+                test_ib.disconnect()
+                logger.info(f"Found available client ID: {test_id}")
+                return test_id
+                
+            except Exception as e:
+                # This ID didn't work, try next
+                if test_ib and test_ib.isConnected():
+                    test_ib.disconnect()
+                    
+                error_str = str(e)
+                if "already in use" in error_str:
+                    logger.debug(f"Client ID {test_id} already in use, trying next...")
+                    continue
+                elif "TimeoutError" in error_str:
+                    # TWS not responding at all
+                    logger.error("TWS not responding to connection attempts")
+                    raise TWSConnectionError("TWS not responding - check if API is enabled")
+        
+        raise TWSConnectionError("No available client IDs found (tried 20)")
+    
     async def connect(self) -> None:
         """
-        Establish connection to TWS.
+        Establish connection to TWS with dynamic client ID allocation.
         
         Raises:
             TWSConnectionError: If connection fails after max attempts
         """
-        self.ib = IB()
+        if not self.ib:
+            self.ib = IB()
+        
+        # Find available client ID if not already set
+        if self._current_client_id is None:
+            self._current_client_id = await self._find_available_client_id()
         
         while self.reconnect_attempts < self.max_reconnect_attempts:
             try:
                 await self.ib.connectAsync(
                     host=config.tws.host,
                     port=config.tws.port,
-                    clientId=config.tws.client_id,
+                    clientId=self._current_client_id,
                     timeout=config.tws.timeout,
                     readonly=config.tws.readonly,
                     account=config.tws.account
@@ -101,7 +129,13 @@ class TWSConnection:
                 else:
                     self.ib.reqMarketDataType(3)  # Delayed data
                     
-                logger.info(f"Connected to TWS at {config.tws.host}:{config.tws.port}")
+                logger.info(f"Connected to TWS at {config.tws.host}:{config.tws.port} with client ID {self._current_client_id}")
+                
+                # Start connection monitor if not already running
+                if not self._monitor_task or self._monitor_task.done():
+                    self._monitor_task = asyncio.create_task(self._monitor_connection())
+                    logger.info("Started connection monitor")
+                
                 return
                 
             except Exception as e:
@@ -112,9 +146,48 @@ class TWSConnection:
                     await _async_safe_sleep(2 ** self.reconnect_attempts)  # Exponential backoff
                     
         raise TWSConnectionError(f"Failed to connect after {self.max_reconnect_attempts} attempts")
+    
+    async def _monitor_connection(self) -> None:
+        """
+        Monitor connection health and auto-reconnect if needed.
+        Runs as background task.
+        """
+        logger.info("Connection monitor started")
+        
+        while True:
+            try:
+                await asyncio.sleep(30)  # Check every 30 seconds
+                
+                if not self.ib or not self.ib.isConnected():
+                    logger.warning("Connection lost, attempting reconnect...")
+                    self.connected = False
+                    
+                    # Try to reconnect with new client ID if needed
+                    self._current_client_id = None  # Force new ID search
+                    self.reconnect_attempts = 0
+                    
+                    try:
+                        await self.connect()
+                        logger.info("Successfully reconnected to TWS")
+                    except Exception as e:
+                        logger.error(f"Reconnection failed: {e}")
+                        
+            except asyncio.CancelledError:
+                logger.info("Connection monitor stopped")
+                break
+            except Exception as e:
+                logger.error(f"Monitor error: {e}")
         
     async def disconnect(self) -> None:
-        """Disconnect from TWS."""
+        """Disconnect from TWS and stop monitoring."""
+        # Stop monitor task
+        if self._monitor_task and not self._monitor_task.done():
+            self._monitor_task.cancel()
+            try:
+                await self._monitor_task
+            except asyncio.CancelledError:
+                pass
+        
         if self.ib and self.connected:
             # Cancel all active subscriptions
             for contract in self._active_subscriptions:
@@ -123,6 +196,7 @@ class TWSConnection:
             
             self.ib.disconnect()
             self.connected = False
+            self._current_client_id = None
             logger.info("Disconnected from TWS")
             
     async def ensure_connected(self) -> None:
@@ -193,6 +267,10 @@ class TWSConnection:
         Returns:
             List of OptionContract objects with Greeks
         """
+        # Track resources for cleanup
+        stock_ticker = None
+        subscribed_contracts = set()
+        
         try:
             await self.ensure_connected()
             
@@ -292,6 +370,7 @@ class TWSConnection:
                                 False, 
                                 False
                             )
+                            subscribed_contracts.add(option)  # Track for cleanup
                             self._active_subscriptions.add(option)
                             self._subscription_count += 1
                             
@@ -343,33 +422,37 @@ class TWSConnection:
                             logger.warning(f"Error fetching option {symbol} {expiry_str} {strike} {right}: {e}")
                             continue
             
-            # Cancel market data subscriptions to free up resources
-            for contract in list(self._active_subscriptions):
-                try:
-                    self.ib.cancelMktData(contract)
-                except:
-                    pass
-            self._active_subscriptions.clear()
-            self._subscription_count = 0
-            
-            # Cancel stock ticker
-            try:
-                self.ib.cancelMktData(stock)
-            except:
-                pass
-            
             logger.info(f"Fetched {len(options_list)} option contracts for {symbol}")
             return options_list
             
         except Exception as e:
             logger.error(f"Error fetching options chain for {symbol}: {e}")
-            # Clean up any partial subscriptions
-            try:
-                self._active_subscriptions.clear()
-                self._subscription_count = 0
-            except:
-                pass
             raise TWSConnectionError(f"Failed to fetch options chain for {symbol}: {e}")
+            
+        finally:
+            # ALWAYS clean up market data subscriptions
+            logger.debug(f"Cleaning up {len(subscribed_contracts)} market data subscriptions")
+            
+            # Cancel all option subscriptions
+            for contract in subscribed_contracts:
+                try:
+                    self.ib.cancelMktData(contract)
+                    if contract in self._active_subscriptions:
+                        self._active_subscriptions.remove(contract)
+                except Exception as e:
+                    logger.debug(f"Error canceling market data: {e}")
+            
+            # Cancel stock ticker if it exists
+            if stock_ticker:
+                try:
+                    self.ib.cancelMktData(stock)
+                except:
+                    pass
+            
+            # Update subscription count
+            self._subscription_count = max(0, self._subscription_count - len(subscribed_contracts) - 1)
+            
+            logger.debug(f"Cleanup complete. Active subscriptions: {self._subscription_count}")
     
     async def subscribe_to_market_data(self, contract: Contract) -> Any:
         """
@@ -425,8 +508,7 @@ class TWSConnection:
             
             # Get account summary
             self.ib.reqAccountSummary()
-            import time
-            time.sleep(2)  # Wait for data synchronously
+            await asyncio.sleep(2)  # Wait for data asynchronously
             account_values = self.ib.accountSummary()
             logger.info(f"Retrieved {len(account_values)} account values")
             
@@ -668,12 +750,18 @@ class TWSConnection:
                 order = LimitOrder(action, quantity, limit_price)
             else:
                 raise ValueError(f"Unsupported order type: {order_type}")
-                
+            
+            # Add SMART routing for price improvement on all orders
+            from ib_async import TagValue
+            order.smartComboRoutingParams = [
+                TagValue("NonGuaranteed", "1")  # Enable immediate price improvement
+            ]
+            
             # Place the order
             trade = self.ib.placeOrder(stock, order)
             
             # Wait for order to be acknowledged
-            await _async_safe_sleep(2)
+            await asyncio.sleep(2)
             
             logger.info(f"Placed {action} order for {quantity} shares of {symbol} at {limit_price if limit_price else 'market price'}")
             
@@ -744,24 +832,38 @@ class TWSConnection:
                 order = MarketOrder('BUY', 1)  # Quantity 1 for combo
             else:
                 # For limit orders, get the net debit/credit
-                if hasattr(strategy, 'calculate_net_debit_credit'):
-                    # If it's a BaseStrategy with async method
+                # Import here to avoid circular dependency
+                from src.modules.strategies.base import BaseStrategy
+                from src.models import Strategy
+                
+                if isinstance(strategy, BaseStrategy):
+                    # BaseStrategy with async method
                     net_debit_credit = await strategy.calculate_net_debit_credit()
-                elif hasattr(strategy, 'net_debit_credit'):
-                    # If it's a Strategy dataclass with property
+                elif isinstance(strategy, Strategy):
+                    # Strategy dataclass with property
                     net_debit_credit = strategy.net_debit_credit
                 else:
                     # Fallback - calculate from legs
-                    net_debit_credit = sum(leg.cost for leg in strategy.legs) if strategy.legs else 0
+                    net_debit_credit = sum(leg.cost for leg in strategy.legs) if hasattr(strategy, 'legs') and strategy.legs else 0
                     
                 limit_price = abs(net_debit_credit)
                 order = LimitOrder('BUY', 1, limit_price)
             
-            # Place the order
+            # Add SMART routing for price improvement (NonGuaranteed for immediate execution)
+            from ib_async import TagValue
+            order.smartComboRoutingParams = [
+                TagValue("NonGuaranteed", "1")  # Enable price improvement
+            ]
+            
+            # Set order combo legs for native spread execution
+            order.orderComboLegs = []  # IBKR will calculate automatically for BAG orders
+            
+            # Place the order with native spread execution
             trade = self.ib.placeOrder(combo, order)
+            logger.info(f"Placed native spread order (BAG) for {strategy.name if hasattr(strategy, 'name') else 'combo'} with SMART routing")
             
             # Wait for order to be acknowledged
-            await _async_safe_sleep(2)
+            await asyncio.sleep(2)
             
             return {
                 'order_id': trade.order.orderId,
@@ -775,6 +877,104 @@ class TWSConnection:
             strategy_name = getattr(strategy, 'name', 'Unknown Strategy')
             logger.error(f"Error placing combo order for {strategy_name}: {e}")
             raise TWSConnectionError(f"Failed to place combo order: {e}")
+    
+    async def place_bracket_order(
+        self,
+        symbol: str,
+        quantity: int,
+        entry_price: float,
+        stop_loss_price: float,
+        profit_target_price: float,
+        is_option: bool = False,
+        option_params: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """
+        Place a bracket order with entry, stop loss, and profit target.
+        
+        Args:
+            symbol: Stock or underlying symbol
+            quantity: Number of shares/contracts
+            entry_price: Entry limit price
+            stop_loss_price: Stop loss trigger price
+            profit_target_price: Profit target limit price
+            is_option: Whether this is for options
+            option_params: Dict with expiry, strike, right for options
+        
+        Returns:
+            Order placement result with all three order IDs
+        """
+        try:
+            await self.ensure_connected()
+            
+            # Create contract
+            if is_option and option_params:
+                contract = self.create_option_contract(
+                    symbol,
+                    option_params['expiry'],
+                    option_params['strike'],
+                    option_params['right'],
+                    'SMART'
+                )
+            else:
+                contract = Stock(symbol, 'SMART', 'USD')
+            
+            # Qualify contract
+            qualified = await self.ib.qualifyContractsAsync(contract)
+            if qualified:
+                contract = qualified[0]
+            
+            # Create parent order (entry) with SMART routing
+            from ib_async import TagValue
+            parent_order = LimitOrder('BUY', quantity, entry_price)
+            parent_order.transmit = False  # Don't transmit until bracket is complete
+            parent_order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
+            
+            # Place parent order
+            parent_trade = self.ib.placeOrder(contract, parent_order)
+            parent_id = parent_trade.order.orderId
+            
+            # Create stop loss order
+            stop_order = Order()
+            stop_order.action = 'SELL'
+            stop_order.totalQuantity = quantity
+            stop_order.orderType = 'STP'
+            stop_order.auxPrice = stop_loss_price  # Stop trigger price
+            stop_order.parentId = parent_id
+            stop_order.transmit = False
+            
+            # Place stop loss
+            stop_trade = self.ib.placeOrder(contract, stop_order)
+            
+            # Create profit target order
+            profit_order = LimitOrder('SELL', quantity, profit_target_price)
+            profit_order.parentId = parent_id
+            profit_order.transmit = True  # Transmit all orders now
+            profit_order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
+            
+            # Place profit target (this transmits all three)
+            profit_trade = self.ib.placeOrder(contract, profit_order)
+            
+            # Wait for acknowledgment
+            await asyncio.sleep(2)
+            
+            logger.info(f"Placed bracket order for {symbol}: Entry={entry_price}, Stop={stop_loss_price}, Target={profit_target_price}")
+            
+            return {
+                'parent_order_id': parent_id,
+                'stop_order_id': stop_trade.order.orderId,
+                'profit_order_id': profit_trade.order.orderId,
+                'symbol': symbol,
+                'quantity': quantity,
+                'entry_price': entry_price,
+                'stop_loss': stop_loss_price,
+                'profit_target': profit_target_price,
+                'max_risk': (entry_price - stop_loss_price) * quantity,
+                'max_reward': (profit_target_price - entry_price) * quantity
+            }
+            
+        except Exception as e:
+            logger.error(f"Error placing bracket order for {symbol}: {e}")
+            raise TWSConnectionError(f"Failed to place bracket order: {e}")
 
 # Global connection instance
 tws_connection = TWSConnection()

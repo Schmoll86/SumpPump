@@ -80,6 +80,9 @@ async def get_options_chain(
     logger.info(f"Fetching options chain for {symbol}")
     
     try:
+        # Ensure TWS is connected
+        await ensure_tws_connected()
+        
         # Import the data module
         from src.modules.data import options_data
         
@@ -657,6 +660,384 @@ async def get_news(
             'provider': provider,
             'message': message
         }
+
+# MCP Tool: Get Level 2 Depth
+@mcp.tool()
+async def get_market_depth(
+    symbol: str,
+    levels: int = 5
+) -> Dict[str, Any]:
+    """
+    Get Level 2 depth of book data (IEX feed).
+    
+    Args:
+        symbol: Stock symbol (e.g., 'AAPL')
+        levels: Number of price levels (max 10)
+    
+    Returns:
+        Order book with bid/ask levels and analytics
+    """
+    logger.info(f"Fetching Level 2 depth for {symbol}")
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.data.depth_of_book import DepthOfBook, DepthProvider
+        from src.config import config
+        
+        if not config.data.use_level2_depth:
+            return {
+                'error': 'Level 2 depth is disabled',
+                'message': 'Enable USE_LEVEL2_DEPTH in environment variables'
+            }
+        
+        await ensure_tws_connected()
+        
+        depth = DepthOfBook(tws_connection)
+        order_book = await depth.get_depth(
+            symbol=symbol,
+            num_levels=min(levels, config.data.max_depth_levels),
+            provider=DepthProvider[config.data.depth_provider],
+            smart_depth=config.data.use_smart_depth
+        )
+        
+        return order_book.to_dict()
+        
+    except Exception as e:
+        logger.error(f"Error getting market depth: {e}")
+        return {'error': str(e), 'symbol': symbol}
+
+
+# MCP Tool: Get Depth Analytics
+@mcp.tool()
+async def get_depth_analytics(symbol: str) -> Dict[str, Any]:
+    """
+    Get advanced depth analytics including price impact estimates.
+    
+    Args:
+        symbol: Stock symbol
+    
+    Returns:
+        Depth analytics with VWAP estimates and market maker info
+    """
+    logger.info(f"Calculating depth analytics for {symbol}")
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.data.depth_of_book import DepthOfBook
+        
+        await ensure_tws_connected()
+        
+        depth = DepthOfBook(tws_connection)
+        analytics = await depth.get_depth_analytics(symbol)
+        
+        return analytics
+        
+    except Exception as e:
+        logger.error(f"Error getting depth analytics: {e}")
+        return {'error': str(e), 'symbol': symbol}
+
+
+# MCP Tool: Get Index Quote
+@mcp.tool()
+async def get_index_quote(symbol: str) -> Dict[str, Any]:
+    """
+    Get index quote (SPX, NDX, VIX, etc).
+    
+    Args:
+        symbol: Index symbol
+    
+    Returns:
+        Index quote with price and change data
+    """
+    logger.info(f"Fetching index quote for {symbol}")
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.data.indices import IndexTrading
+        from src.config import config
+        
+        if not config.data.enable_index_trading:
+            return {
+                'error': 'Index trading is disabled',
+                'message': 'Enable ENABLE_INDEX_TRADING in environment variables'
+            }
+        
+        await ensure_tws_connected()
+        
+        indices = IndexTrading(tws_connection)
+        quote = await indices.get_index_quote(symbol)
+        
+        return quote.to_dict()
+        
+    except Exception as e:
+        logger.error(f"Error getting index quote: {e}")
+        return {'error': str(e), 'symbol': symbol}
+
+
+# MCP Tool: Get Index Options
+@mcp.tool()
+async def get_index_options(
+    symbol: str,
+    expiry: Optional[str] = None,
+    strike_range_pct: float = 0.1
+) -> List[Dict[str, Any]]:
+    """
+    Get index options chain (SPX, NDX, etc).
+    
+    Args:
+        symbol: Index symbol
+        expiry: Optional expiry date (YYYY-MM-DD)
+        strike_range_pct: Strike range as percentage of spot
+    
+    Returns:
+        List of index option contracts with Greeks
+    """
+    logger.info(f"Fetching index options for {symbol}")
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.data.indices import IndexTrading
+        
+        await ensure_tws_connected()
+        
+        indices = IndexTrading(tws_connection)
+        options = await indices.get_index_options(
+            symbol=symbol,
+            expiry=expiry,
+            strike_range_pct=strike_range_pct
+        )
+        
+        return [
+            {
+                'symbol': opt.symbol,
+                'strike': opt.strike,
+                'expiry': opt.expiry.isoformat(),
+                'right': opt.right.value,
+                'bid': opt.bid,
+                'ask': opt.ask,
+                'last': opt.last,
+                'mid': opt.mid_price,
+                'iv': opt.iv,
+                'volume': opt.volume,
+                'multiplier': opt.multiplier,
+                'greeks': {
+                    'delta': opt.greeks.delta if opt.greeks else None,
+                    'gamma': opt.greeks.gamma if opt.greeks else None,
+                    'vega': opt.greeks.vega if opt.greeks else None,
+                    'theta': opt.greeks.theta if opt.greeks else None
+                }
+            }
+            for opt in options
+        ]
+        
+    except Exception as e:
+        logger.error(f"Error getting index options: {e}")
+        return [{'error': str(e), 'symbol': symbol}]
+
+
+# MCP Tool: Get Crypto Quote
+@mcp.tool()
+async def get_crypto_quote(
+    symbol: str,
+    quote_currency: str = "USD"
+) -> Dict[str, Any]:
+    """
+    Get cryptocurrency quote (BTC, ETH, etc).
+    
+    Args:
+        symbol: Crypto symbol
+        quote_currency: Quote currency (USD, EUR, etc)
+    
+    Returns:
+        Crypto quote with 24h change and volume
+    """
+    logger.info(f"Fetching crypto quote for {symbol}")
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.data.crypto import CryptoTrading, CryptoExchange
+        from src.config import config
+        
+        if not config.data.use_crypto_feed:
+            return {
+                'error': 'Crypto trading is disabled',
+                'message': 'Enable USE_CRYPTO_FEED in environment variables'
+            }
+        
+        await ensure_tws_connected()
+        
+        crypto = CryptoTrading(
+            tws_connection,
+            CryptoExchange[config.data.crypto_exchange]
+        )
+        quote = await crypto.get_crypto_quote(symbol, quote_currency)
+        
+        return quote.to_dict()
+        
+    except Exception as e:
+        logger.error(f"Error getting crypto quote: {e}")
+        return {'error': str(e), 'symbol': symbol}
+
+
+# MCP Tool: Get Crypto Analysis
+@mcp.tool()
+async def analyze_crypto(symbol: str) -> Dict[str, Any]:
+    """
+    Get comprehensive crypto analysis with technicals.
+    
+    Args:
+        symbol: Crypto symbol
+    
+    Returns:
+        Analysis with RSI, moving averages, and recommendation
+    """
+    logger.info(f"Analyzing crypto {symbol}")
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.data.crypto import CryptoTrading, CryptoExchange
+        from src.config import config
+        
+        if not config.data.use_crypto_feed:
+            return {
+                'error': 'Crypto trading is disabled',
+                'message': 'Enable USE_CRYPTO_FEED in environment variables'
+            }
+        
+        await ensure_tws_connected()
+        
+        crypto = CryptoTrading(
+            tws_connection,
+            CryptoExchange[config.data.crypto_exchange]
+        )
+        analysis = await crypto.get_crypto_analysis(symbol)
+        
+        return analysis
+        
+    except Exception as e:
+        logger.error(f"Error analyzing crypto: {e}")
+        return {'error': str(e), 'symbol': symbol}
+
+
+# MCP Tool: Get FX Quote
+@mcp.tool()
+async def get_fx_quote(pair: str) -> Dict[str, Any]:
+    """
+    Get forex quote (EURUSD, GBPUSD, etc).
+    
+    Args:
+        pair: Currency pair (6 characters, e.g., 'EURUSD')
+    
+    Returns:
+        FX quote with bid/ask and spread in pips
+    """
+    logger.info(f"Fetching FX quote for {pair}")
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.data.forex import ForexTrading, FXVenue
+        from src.config import config
+        
+        if not config.data.use_fx_feed:
+            return {
+                'error': 'Forex trading is disabled',
+                'message': 'Enable USE_FX_FEED in environment variables'
+            }
+        
+        await ensure_tws_connected()
+        
+        forex = ForexTrading(
+            tws_connection,
+            FXVenue[config.data.fx_exchange]
+        )
+        quote = await forex.get_fx_quote(pair)
+        
+        return quote.to_dict()
+        
+    except Exception as e:
+        logger.error(f"Error getting FX quote: {e}")
+        return {'error': str(e), 'pair': pair}
+
+
+# MCP Tool: Get FX Analytics
+@mcp.tool()
+async def analyze_fx_pair(pair: str) -> Dict[str, Any]:
+    """
+    Get forex pair analysis with technicals and recommendation.
+    
+    Args:
+        pair: Currency pair
+    
+    Returns:
+        FX analysis with trend, ATR, and trading levels
+    """
+    logger.info(f"Analyzing FX pair {pair}")
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.data.forex import ForexTrading, FXVenue
+        from src.config import config
+        
+        if not config.data.use_fx_feed:
+            return {
+                'error': 'Forex trading is disabled',
+                'message': 'Enable USE_FX_FEED in environment variables'
+            }
+        
+        await ensure_tws_connected()
+        
+        forex = ForexTrading(
+            tws_connection,
+            FXVenue[config.data.fx_exchange]
+        )
+        analytics = await forex.get_fx_analytics(pair)
+        
+        return analytics
+        
+    except Exception as e:
+        logger.error(f"Error analyzing FX pair: {e}")
+        return {'error': str(e), 'pair': pair}
+
+
+# MCP Tool: Get VIX Term Structure
+@mcp.tool()
+async def get_vix_term_structure() -> List[Dict[str, Any]]:
+    """
+    Get VIX futures term structure for volatility analysis.
+    
+    Returns:
+        VIX futures curve with contango/backwardation metrics
+    """
+    logger.info("Fetching VIX term structure")
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.data.indices import IndexTrading
+        
+        await ensure_tws_connected()
+        
+        indices = IndexTrading(tws_connection)
+        term_structure = await indices.get_vix_term_structure()
+        
+        return term_structure
+        
+    except Exception as e:
+        logger.error(f"Error getting VIX term structure: {e}")
+        return [{'error': str(e)}]
+
+
+# Initialize TWS connection when needed
+async def ensure_tws_connected():
+    """Ensure TWS connection is established."""
+    from src.modules.tws.connection import tws_connection
+    if not tws_connection.connected:
+        try:
+            logger.info("Establishing TWS connection...")
+            await tws_connection.connect()
+            logger.info("✅ TWS connection established")
+        except Exception as e:
+            logger.error(f"Failed to connect to TWS: {e}")
+            raise Exception(f"TWS connection failed: {e}")
 
 # Main entry point
 def main():

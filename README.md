@@ -1,108 +1,212 @@
-# SumpPump - IBKR Options Trading Assistant
+# SumpPump - IBKR Trading Assistant
 
-An MCP (Model Context Protocol) server that enables Claude Desktop to act as a conversational options trading assistant for Interactive Brokers TWS, focused on level 2 options strategies with real-time data access and risk management.
+A sophisticated MCP (Model Context Protocol) server that bridges Claude Desktop with Interactive Brokers TWS for conversational options trading and market analysis.
 
-## 🚀 Quick Start
+## Features
 
-1. **Prerequisites**
-   - Python 3.10+
-   - Interactive Brokers TWS (not IB Gateway)
-   - Claude Desktop with MCP support
-   - Active IBKR account with options trading permissions
+### Core Trading Capabilities
+- **Options Trading**: Full options chain access with Greeks, multi-leg strategies
+- **Real-Time Market Data**: Live quotes, Level 1 data, options chains
+- **Strategy Analysis**: Calculate P&L, breakeven points, and risk metrics
+- **Trade Execution**: Place orders with mandatory confirmation workflow
+- **Risk Management**: Position sizing, stop-loss prompts, max loss calculations
 
-2. **Installation**
-   ```bash
-   cd /Users/schmoll/Desktop/SumpPump
-   python -m venv venv
-   source venv/bin/activate  # On macOS
-   pip install -r requirements.txt
-   ```
+### Advanced Data Feeds (NEW)
+- **Level 2 Depth of Book**: IEX depth data with price impact analysis
+- **Index Trading**: SPX, NDX, VIX options and futures
+- **Cryptocurrency**: BTC, ETH, and major cryptos via ZEROHASH/PAXOS
+- **Forex Trading**: Major and minor pairs via IDEALPRO
+- **Premium News**: Dow Jones, Reuters, Benzinga feeds
 
-3. **TWS Configuration**
-   - Enable API connections in TWS (File → Global Configuration → API → Settings)
-   - Set Socket port: 7497 (default for TWS)
-   - Add 127.0.0.1 to Trusted IPs
-   - Check "Download open orders on connection"
-   - Increase memory allocation to 4096 MB minimum
+### Infrastructure
+- **Connection Monitoring**: Automatic reconnection and health checks
+- **Rate Limiting**: Smart API throttling to prevent overload
+- **Error Recovery**: Comprehensive exception handling with recovery strategies
+- **Type Safety**: Pydantic validation for all configurations
 
-4. **Run MCP Server**
-   ```bash
-   python src/mcp/server.py
-   ```
+## Quick Start
 
-## 📂 Project Structure
+### Prerequisites
+- Interactive Brokers TWS or IB Gateway running
+- Python 3.11+
+- Claude Desktop with MCP support
+- Active IBKR account with appropriate permissions
+
+### Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/SumpPump.git
+cd SumpPump
+```
+
+2. Run setup:
+```bash
+./setup.sh
+```
+
+3. Configure environment:
+```bash
+cp .env.example .env
+# Edit .env with your settings
+```
+
+4. Configure Claude Desktop:
+Add to `claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "sump-pump": {
+      "command": "/path/to/SumpPump/venv/bin/python",
+      "args": ["/path/to/SumpPump/src/mcp/server.py"],
+      "env": {}
+    }
+  }
+}
+```
+
+5. Start TWS and Claude Desktop
+
+## Configuration
+
+### Essential Settings (.env)
+
+```bash
+# TWS Connection
+TWS_PORT=7497  # 7497 for live, 7496 for paper
+TWS_CLIENT_ID=5
+
+# Market Data
+USE_DELAYED_DATA=false
+USE_LEVEL2_DEPTH=true
+ENABLE_INDEX_TRADING=true
+
+# Optional Features
+USE_CRYPTO_FEED=false  # Enable for crypto
+USE_FX_FEED=false      # Enable for forex
+
+# Risk Management
+REQUIRE_CONFIRMATION=true
+MAX_POSITION_SIZE_PERCENT=5.0
+```
+
+## Available MCP Tools
+
+### Options Trading
+- `get_options_chain(symbol, expiry)` - Fetch options with Greeks
+- `calculate_strategy(strategy_type, legs)` - Analyze multi-leg strategies
+- `execute_trade(strategy, confirmation_token)` - Place orders
+
+### Market Data
+- `get_market_depth(symbol, levels)` - Level 2 order book
+- `get_depth_analytics(symbol)` - Price impact analysis
+- `get_index_quote(symbol)` - Index quotes (SPX, NDX, VIX)
+- `get_index_options(symbol)` - Index options chains
+
+### Crypto & Forex (Optional)
+- `get_crypto_quote(symbol)` - Cryptocurrency quotes
+- `analyze_crypto(symbol)` - Crypto technical analysis
+- `get_fx_quote(pair)` - Forex quotes
+- `analyze_fx_pair(pair)` - FX technical analysis
+
+### News & Analysis
+- `get_news(symbol, provider)` - Premium news feeds
+- `get_vix_term_structure()` - VIX futures curve
+
+## Usage Examples
+
+In Claude Desktop:
+
+```
+"Show me the options chain for AAPL expiring next Friday"
+"Calculate a bull call spread on SPY 450/455"
+"Get Level 2 depth for TSLA"
+"Show me SPX options near the money"
+"What's the latest news on NVDA?"
+```
+
+## Safety Features
+
+- **Mandatory Confirmation**: All trades require explicit confirmation
+- **Max Loss Display**: Always shows maximum potential loss
+- **Stop Loss Prompts**: Automatic prompts after fills
+- **Position Limits**: Configurable maximum position sizes
+- **Rate Limiting**: Prevents API overload
+
+## Project Structure
 
 ```
 SumpPump/
-├── .claude/              # Claude Code Development Kit integration
 ├── src/
-│   ├── mcp/             # MCP server implementation
-│   └── modules/         # Core trading modules
-│       ├── tws/         # TWS connection management
-│       ├── data/        # Market data and options chains
-│       ├── analysis/    # Strategy analysis tools
-│       ├── strategies/  # Options strategy templates
-│       ├── risk/        # Risk management
-│       └── execution/   # Order execution
-├── config/              # Configuration files
-├── cache/               # Session data caching
-├── logs/                # Application logs
-└── tests/               # Test suite
+│   ├── mcp/
+│   │   └── server.py          # MCP server with tools
+│   ├── core/                  # Infrastructure (NEW)
+│   │   ├── exceptions.py      # Error hierarchy
+│   │   ├── connection_monitor.py
+│   │   ├── rate_limiter.py
+│   │   └── settings.py
+│   ├── modules/
+│   │   ├── tws/               # TWS connection
+│   │   ├── data/              # Market data modules
+│   │   │   ├── depth_of_book.py
+│   │   │   ├── indices.py
+│   │   │   ├── crypto.py
+│   │   │   └── forex.py
+│   │   ├── strategies/        # Strategy calculations
+│   │   └── risk/              # Risk management
+│   └── models.py              # Data models
+├── tests/                     # Test suite
+├── .env.example              # Configuration template
+└── CLAUDE.md                 # Context for Claude
 ```
 
-## 🔧 Architecture
+## Development
 
-Built on:
-- **ib_async**: Modern async framework for IBKR API
-- **FastMCP**: High-performance MCP server implementation
-- **asyncio**: Asynchronous I/O for real-time data handling
+### Running Tests
+```bash
+pytest tests/ -v
+```
 
-## 🛡️ Safety Features
+### Adding New Features
+1. Create module in `src/modules/`
+2. Add MCP tool in `src/mcp/server.py`
+3. Update configuration in `src/config.py`
+4. Add tests in `tests/`
 
-- **No automatic trading** without explicit confirmation
-- **Full strategy analysis** before execution
-- **Max risk calculation** on every trade
-- **Stop loss prompts** after fills
-- **Clear separation** between analysis and execution
+## Troubleshooting
 
-## 📊 Supported Strategies (IBKR Level 2)
+### Connection Issues
+- Verify TWS is running and API is enabled
+- Check port settings (7497 for live, 7496 for paper)
+- Ensure Client ID is not in use
 
-**Available with Level 2 Permissions:**
-- Long Calls & Puts
-- Bull Call Spreads (debit)
-- Bear Put Spreads (debit)
-- Covered Calls
-- Protective Puts & Calls
-- Collars
-- Long Straddles & Strangles
-- Long Iron Condors
+### Market Data Issues
+- Verify market data subscriptions in IBKR
+- Check market hours
+- Confirm symbol validity
 
-**NOT Available (Need Level 3+):**
-- Credit Spreads (bear call, bull put)
-- Cash-Secured Puts
-- Calendar/Diagonal Spreads
-- Butterflies
-- Naked Short Options
+### Rate Limiting
+- Reduce concurrent requests
+- Check `MAX_MARKET_DATA_LINES` setting
+- Monitor rate limit metrics in logs
 
-## 🔌 MCP Tools Available
+## Requirements
 
-- `get_options_chain()` - Fetch full options chain with Greeks
-- `calculate_strategy()` - Analyze P&L for strategies
-- `execute_trade()` - Execute with mandatory confirmation
-- `set_stop_loss()` - Set protective stops
-- `get_market_data()` - Real-time quotes and statistics
+- IBKR Account with appropriate permissions
+- Market data subscriptions for desired feeds
+- TWS API enabled (port 7497)
+- Python packages: ib_async, fastmcp, pydantic
 
-## 📚 Documentation
+## License
 
-See `/docs` for detailed documentation on:
-- API integration patterns
-- Strategy implementation
-- Risk management protocols
-- MCP tool specifications
+MIT License - See LICENSE file for details
 
-## ⚠️ Important Notes
+## Support
 
-- **LIVE TRADING ONLY** - No paper trading mode
-- Requires active market data subscriptions
-- All trades require explicit confirmation
-- Session data cleared between symbol discussions
+- Report issues: [GitHub Issues](https://github.com/yourusername/SumpPump/issues)
+- Documentation: See CLAUDE.md for detailed context
+- TWS API Docs: [IBKR API Documentation](https://interactivebrokers.github.io/)
+
+## Disclaimer
+
+This software is for educational purposes. Trading involves risk. Always verify orders before execution. The authors are not responsible for any financial losses.

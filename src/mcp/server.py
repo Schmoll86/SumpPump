@@ -252,12 +252,14 @@ async def calculate_strategy(
         max_loss = await strategy.calculate_max_loss()
         breakevens = await strategy.get_breakeven_points()
         probability = await strategy.calculate_probability_of_profit()
+        net_debit_credit = await strategy.calculate_net_debit_credit()
+        greeks = await strategy.aggregate_greeks()
         
         # Ensure this is a debit strategy (Level 2 requirement)
-        if strategy.net_debit_credit > 0:
+        if net_debit_credit > 0:
             return {
                 'error': "This would be a credit strategy. Level 2 only allows debit strategies.",
-                'net_credit': strategy.net_debit_credit,
+                'net_credit': net_debit_credit,
                 'message': "You must pay premium upfront with Level 2 permissions."
             }
         
@@ -272,8 +274,8 @@ async def calculate_strategy(
                 'max_loss': max_loss,
                 'breakeven_points': breakevens,
                 'probability_of_profit': f"{probability:.1%}" if probability else 'N/A',
-                'net_debit': abs(strategy.net_debit_credit),
-                'greeks': strategy.aggregate_greeks()
+                'net_debit': abs(net_debit_credit),
+                'greeks': greeks
             },
             'level2_compliant': True,
             'timestamp': datetime.now().isoformat()

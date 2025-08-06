@@ -130,3 +130,56 @@ class ExecutionResult:
     commission: float
     timestamp: datetime
     confirmation_token: str
+
+
+class OrderType(Enum):
+    """Order type enumeration."""
+    MARKET = "MKT"
+    LIMIT = "LMT"
+    STOP = "STP"
+    STOP_LIMIT = "STP LMT"
+    TRAILING_STOP = "TRAIL"
+
+
+class OrderStatus(Enum):
+    """Order status enumeration."""
+    PENDING_SUBMIT = "PendingSubmit"
+    PENDING_CANCEL = "PendingCancel"
+    PRE_SUBMITTED = "PreSubmitted"
+    SUBMITTED = "Submitted"
+    CANCELLED = "Cancelled"
+    FILLED = "Filled"
+    INACTIVE = "Inactive"
+
+
+@dataclass
+class PositionDetails:
+    """Details about an open position."""
+    position_id: str
+    symbol: str
+    position_type: str  # 'option', 'stock', 'spread'
+    quantity: int
+    avg_cost: float
+    current_price: float
+    unrealized_pnl: float
+    realized_pnl: float
+    market_value: float
+    option_details: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class OrderDetails:
+    """Details about an order."""
+    order_id: int
+    symbol: str
+    action: str
+    quantity: int
+    order_type: OrderType
+    status: OrderStatus
+    limit_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    filled_quantity: int = 0
+    remaining_quantity: int = 0
+    avg_fill_price: Optional[float] = None
+    parent_id: Optional[int] = None
+    oca_group: Optional[str] = None

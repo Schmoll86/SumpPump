@@ -1026,6 +1026,478 @@ async def get_vix_term_structure() -> List[Dict[str, Any]]:
         return [{'error': str(e)}]
 
 
+# MCP Tool: Get My Positions
+@mcp.tool()
+async def get_my_positions() -> Dict[str, Any]:
+    """
+    Get all open positions with current P&L.
+    
+    Returns:
+        Dict containing all positions with unrealized P&L, market values, and Greeks
+    """
+    logger.info("Fetching current positions")
+    
+    try:
+        # Ensure TWS is connected
+        await ensure_tws_connected()
+        
+        from src.modules.tws.connection import tws_connection
+        from ib_async import Position, PortfolioItem
+        
+        # Get positions from TWS
+        positions: List[Position] = tws_connection.ib.positions()
+        
+        # Get portfolio items for P&L data
+        portfolio: List[PortfolioItem] = tws_connection.ib.portfolio()
+        
+        # Build position data
+        position_data = []
+        total_unrealized_pnl = 0.0
+        total_realized_pnl = 0.0
+        
+        for position in positions:
+            # Find matching portfolio item for P&L
+            portfolio_item = next(
+                (item for item in portfolio if item.contract.conId == position.contract.conId),
+                None
+            )
+            
+            # Determine position type
+            if position.contract.secType == 'OPT':
+                position_type = 'option'
+                # Parse option details
+                option_details = {
+                    'symbol': position.contract.symbol,
+                    'strike': position.contract.strike,
+                    'expiry': position.contract.lastTradeDateOrContractMonth,
+                    'right': position.contract.right,
+                    'multiplier': int(position.contract.multiplier or 100)
+                }
+            elif position.contract.secType == 'STK':
+                position_type = 'stock'
+                option_details = None
+            else:
+                position_type = position.contract.secType.lower()
+                option_details = None
+            
+            # Build position entry
+            pos_entry = {
+                'position_id': str(position.contract.conId),
+                'account': position.account,
+                'symbol': position.contract.symbol,
+                'position_type': position_type,
+                'quantity': position.position,
+                'avg_cost': position.avgCost,
+                'option_details': option_details
+            }
+            
+            # Add P&L data if available
+            if portfolio_item:
+                pos_entry.update({
+                    'market_value': portfolio_item.marketValue,
+                    'unrealized_pnl': portfolio_item.unrealizedPNL,
+                    'realized_pnl': portfolio_item.realizedPNL,
+                    'market_price': portfolio_item.marketPrice
+                })
+                total_unrealized_pnl += portfolio_item.unrealizedPNL
+                total_realized_pnl += portfolio_item.realizedPNL
+            
+            position_data.append(pos_entry)
+        
+        return {
+            'status': 'success',
+            'positions': position_data,
+            'position_count': len(position_data),
+            'total_unrealized_pnl': total_unrealized_pnl,
+            'total_realized_pnl': total_realized_pnl,
+            'total_pnl': total_unrealized_pnl + total_realized_pnl,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch positions: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': 'Could not retrieve positions. Check TWS connection.'
+        }
+
+
+# MCP Tool: Get Open Orders
+@mcp.tool()
+async def get_open_orders() -> Dict[str, Any]:
+    """
+    Get all pending/open orders.
+    
+    Returns:
+        Dict containing all open orders with their status and details
+    """
+    logger.info("Fetching open orders")
+    
+    try:
+        await ensure_tws_connected()
+        
+        from src.modules.tws.connection import tws_connection
+        from ib_async import Trade, Order, Contract, OrderStatus
+        
+        # Get all open orders
+        open_trades: List[Trade] = tws_connection.ib.openTrades()
+        
+        # Build order data
+        order_data = []
+        
+        for trade in open_trades:
+            order: Order = trade.order
+            contract: Contract = trade.contract
+            status: OrderStatus = trade.orderStatus
+            
+            # Determine order details based on type
+            order_details = {
+                'order_type': order.orderType,
+                'action': order.action,
+                'quantity': order.totalQuantity,
+                'filled': status.filled,
+                'remaining': status.remaining,
+                'status': status.status
+            }
+            
+            # Add price information based on order type
+            if order.orderType == 'LMT':
+                order_details['limit_price'] = order.lmtPrice
+            elif order.orderType == 'STP':
+                order_details['stop_price'] = order.auxPrice
+            elif order.orderType == 'TRAIL':
+                order_details['trailing_amount'] = order.trailingPercent or order.auxPrice
+            
+            # Build contract details
+            if contract.secType == 'OPT':
+                contract_details = {
+                    'type': 'option',
+                    'symbol': contract.symbol,
+                    'strike': contract.strike,
+                    'expiry': contract.lastTradeDateOrContractMonth,
+                    'right': contract.right
+                }
+            elif contract.secType == 'STK':
+                contract_details = {
+                    'type': 'stock',
+                    'symbol': contract.symbol
+                }
+            elif contract.secType == 'BAG':
+                contract_details = {
+                    'type': 'combo',
+                    'symbol': contract.symbol,
+                    'legs': len(contract.comboLegs) if contract.comboLegs else 0
+                }
+            else:
+                contract_details = {
+                    'type': contract.secType.lower(),
+                    'symbol': contract.symbol
+                }
+            
+            # Build order entry
+            order_entry = {
+                'order_id': order.orderId,
+                'perm_id': order.permId,
+                'client_id': order.clientId,
+                'account': order.account,
+                'contract': contract_details,
+                'order': order_details,
+                'time_in_force': order.tif,
+                'submit_time': status.lastFillTime if status.lastFillTime else None,
+                'commission': status.commission if status.commission else 0,
+                'parent_id': order.parentId if order.parentId else None
+            }
+            
+            order_data.append(order_entry)
+        
+        # Group orders by parent (for bracket orders)
+        parent_orders = {}
+        child_orders = []
+        
+        for order in order_data:
+            if order['parent_id']:
+                child_orders.append(order)
+            else:
+                parent_orders[order['order_id']] = order
+        
+        # Attach children to parents
+        for child in child_orders:
+            parent_id = child['parent_id']
+            if parent_id in parent_orders:
+                if 'child_orders' not in parent_orders[parent_id]:
+                    parent_orders[parent_id]['child_orders'] = []
+                parent_orders[parent_id]['child_orders'].append(child)
+        
+        return {
+            'status': 'success',
+            'orders': list(parent_orders.values()),
+            'order_count': len(parent_orders),
+            'total_orders_with_children': len(order_data),
+            'timestamp': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch open orders: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': 'Could not retrieve open orders. Check TWS connection.'
+        }
+
+
+@mcp.tool()
+async def close_position(
+    symbol: str,
+    position_type: str,  # 'call', 'put', 'spread', 'stock'
+    quantity: int,
+    order_type: str = 'MKT',  # 'MKT' or 'LMT'
+    limit_price: Optional[float] = None,
+    position_id: Optional[str] = None  # Optional specific position ID
+) -> Dict[str, Any]:
+    """
+    Close an existing option or stock position.
+    
+    Args:
+        symbol: Symbol of the position to close
+        position_type: Type of position ('call', 'put', 'spread', 'stock')
+        quantity: Number of contracts/shares to close
+        order_type: Market or limit order
+        limit_price: Price for limit orders
+        position_id: Optional specific position ID to close
+    
+    Returns:
+        Order execution result
+    """
+    logger.info(f"Closing {position_type} position for {symbol}")
+    
+    try:
+        from src.modules.execution.advanced_orders import close_position as close_position_impl
+        result = await close_position_impl(
+            tws_connection,
+            symbol,
+            position_type,
+            quantity,
+            order_type,
+            limit_price,
+            position_id
+        )
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to close position: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': 'Position closing failed. Check TWS connection and position details.'
+        }
+
+
+@mcp.tool()
+async def set_stop_loss(
+    position_id: str,
+    stop_price: float,
+    stop_type: str = 'fixed',  # 'fixed' or 'trailing'
+    trailing_amount: Optional[float] = None,  # For trailing stops (dollars or percent)
+    trailing_type: Optional[str] = 'amount'  # 'amount' or 'percent'
+) -> Dict[str, Any]:
+    """
+    Set a stop loss order for an existing position.
+    
+    Args:
+        position_id: Position identifier (contract ID or order ID)
+        stop_price: Stop trigger price (for fixed stops) or initial stop (for trailing)
+        stop_type: 'fixed' for regular stop, 'trailing' for trailing stop
+        trailing_amount: Amount or percent to trail (for trailing stops)
+        trailing_type: 'amount' for dollar trailing, 'percent' for percentage
+    
+    Returns:
+        Stop order confirmation
+    """
+    logger.info(f"Setting {stop_type} stop loss for position {position_id} at {stop_price}")
+    
+    try:
+        from src.modules.execution.advanced_orders import set_stop_loss as set_stop_loss_impl
+        result = await set_stop_loss_impl(
+            tws_connection,
+            position_id,
+            stop_price,
+            stop_type,
+            trailing_amount,
+            trailing_type
+        )
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to set stop loss: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': 'Stop loss order failed. Check position ID and stop price.'
+        }
+
+
+@mcp.tool()
+async def modify_order(
+    order_id: str,
+    new_limit_price: Optional[float] = None,
+    new_quantity: Optional[int] = None,
+    new_stop_price: Optional[float] = None
+) -> Dict[str, Any]:
+    """
+    Modify an existing pending order.
+    
+    Args:
+        order_id: Order ID to modify
+        new_limit_price: New limit price (for limit orders)
+        new_quantity: New quantity
+        new_stop_price: New stop price (for stop orders)
+    
+    Returns:
+        Modification confirmation
+    """
+    logger.info(f"Modifying order {order_id}")
+    
+    try:
+        from src.modules.execution.advanced_orders import modify_order as modify_order_impl
+        result = await modify_order_impl(
+            tws_connection,
+            order_id,
+            new_limit_price,
+            new_quantity,
+            new_stop_price
+        )
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to modify order: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': 'Order modification failed. Order may have been filled or cancelled.'
+        }
+
+
+@mcp.tool()
+async def cancel_order(
+    order_id: str,
+    cancel_all: bool = False
+) -> Dict[str, Any]:
+    """
+    Cancel a pending order or all open orders.
+    
+    Args:
+        order_id: Order ID to cancel (ignored if cancel_all is True)
+        cancel_all: Cancel all open orders if True
+    
+    Returns:
+        Cancellation confirmation
+    """
+    logger.info(f"Cancelling {'all orders' if cancel_all else f'order {order_id}'}")
+    
+    try:
+        from src.modules.execution.advanced_orders import cancel_order as cancel_order_impl
+        result = await cancel_order_impl(
+            tws_connection,
+            order_id,
+            cancel_all
+        )
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to cancel order: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': 'Order cancellation failed. Order may have already been filled.'
+        }
+
+
+@mcp.tool()
+async def set_price_alert(
+    symbol: str,
+    trigger_price: float,
+    condition: str = 'above',  # 'above' or 'below'
+    action: str = 'notify',  # 'notify', 'close_position', 'place_order'
+    action_params: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Set a price-triggered alert or action.
+    
+    Args:
+        symbol: Symbol to monitor
+        trigger_price: Price level to trigger at
+        condition: Trigger when price goes 'above' or 'below'
+        action: What to do when triggered
+        action_params: Parameters for the action (e.g., order details)
+    
+    Returns:
+        Alert configuration confirmation
+    """
+    logger.info(f"Setting price alert for {symbol} {condition} {trigger_price}")
+    
+    try:
+        from src.modules.execution.advanced_orders import set_price_alert as set_price_alert_impl
+        result = await set_price_alert_impl(
+            tws_connection,
+            symbol,
+            trigger_price,
+            condition,
+            action,
+            action_params
+        )
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to set price alert: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': 'Price alert setup failed. Check parameters and TWS connection.'
+        }
+
+
+@mcp.tool()
+async def roll_option_position(
+    position_id: str,
+    new_strike: Optional[float] = None,
+    new_expiry: Optional[str] = None,  # Format: YYYY-MM-DD
+    roll_type: str = 'calendar'  # 'calendar', 'diagonal', 'vertical'
+) -> Dict[str, Any]:
+    """
+    Roll an option position to a different strike and/or expiration.
+    
+    Args:
+        position_id: Current position to roll
+        new_strike: New strike price (for vertical/diagonal rolls)
+        new_expiry: New expiration date (for calendar/diagonal rolls)
+        roll_type: Type of roll to perform
+    
+    Returns:
+        Roll execution confirmation with both closing and opening trades
+    """
+    logger.info(f"Rolling position {position_id} using {roll_type} roll")
+    
+    try:
+        from src.modules.execution.advanced_orders import roll_option_position as roll_option_impl
+        result = await roll_option_impl(
+            tws_connection,
+            position_id,
+            new_strike,
+            new_expiry,
+            roll_type
+        )
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to roll position: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': 'Position roll failed. Check parameters and market hours.'
+        }
+
+
 # Initialize TWS connection when needed
 async def ensure_tws_connected():
     """Ensure TWS connection is established."""

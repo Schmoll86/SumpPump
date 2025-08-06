@@ -975,6 +975,116 @@ class TWSConnection:
         except Exception as e:
             logger.error(f"Error placing bracket order for {symbol}: {e}")
             raise TWSConnectionError(f"Failed to place bracket order: {e}")
+    
+    async def get_account_summary(self) -> Dict[str, Any]:
+        """
+        Get account summary including buying power and margin.
+        
+        Returns:
+            Account summary data
+        """
+        try:
+            await self.ensure_connected()
+            
+            # Request account summary
+            account_summary = self.ib.accountSummary()
+            
+            summary_dict = {}
+            for item in account_summary:
+                summary_dict[item.tag] = {
+                    'value': item.value,
+                    'currency': item.currency,
+                    'account': item.account
+                }
+            
+            return summary_dict
+            
+        except Exception as e:
+            logger.error(f"Failed to get account summary: {e}")
+            raise TWSConnectionError(f"Failed to get account summary: {e}")
+    
+    async def get_positions_with_pnl(self) -> List[Dict[str, Any]]:
+        """
+        Get all positions with detailed P&L calculations.
+        
+        Returns:
+            List of positions with P&L data
+        """
+        try:
+            await self.ensure_connected()
+            
+            positions = self.ib.positions()
+            portfolio = self.ib.portfolio()
+            
+            # Match positions with portfolio items
+            position_data = []
+            
+            for pos in positions:
+                # Find matching portfolio item
+                portfolio_item = next(
+                    (p for p in portfolio if p.contract.conId == pos.contract.conId),
+                    None
+                )
+                
+                pos_dict = {
+                    'contract': pos.contract,
+                    'position': pos.position,
+                    'avg_cost': pos.avgCost,
+                    'account': pos.account
+                }
+                
+                if portfolio_item:
+                    pos_dict.update({
+                        'market_price': portfolio_item.marketPrice,
+                        'market_value': portfolio_item.marketValue,
+                        'unrealized_pnl': portfolio_item.unrealizedPNL,
+                        'realized_pnl': portfolio_item.realizedPNL
+                    })
+                
+                position_data.append(pos_dict)
+            
+            return position_data
+            
+        except Exception as e:
+            logger.error(f"Failed to get positions with P&L: {e}")
+            raise TWSConnectionError(f"Failed to get positions with P&L: {e}")
+    
+    async def place_oca_order(
+        self,
+        orders: List[Tuple[Contract, Order]],
+        oca_group: str,
+        oca_type: int = 1  # 1 = Cancel all remaining orders with block
+    ) -> List:
+        """
+        Place One-Cancels-All order group.
+        
+        Args:
+            orders: List of (contract, order) tuples
+            oca_group: OCA group name
+            oca_type: OCA type (1, 2, or 3)
+        
+        Returns:
+            List of Trade objects
+        """
+        try:
+            await self.ensure_connected()
+            
+            trades = []
+            
+            for contract, order in orders:
+                # Set OCA properties
+                order.ocaGroup = oca_group
+                order.ocaType = oca_type
+                
+                # Place order
+                trade = self.ib.placeOrder(contract, order)
+                trades.append(trade)
+            
+            return trades
+            
+        except Exception as e:
+            logger.error(f"Failed to place OCA orders: {e}")
+            raise TWSConnectionError(f"Failed to place OCA orders: {e}")
 
 # Global connection instance
 tws_connection = TWSConnection()

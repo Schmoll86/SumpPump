@@ -655,7 +655,9 @@ class TWSConnection:
             
             # Create stock contract
             stock = self.create_stock_contract(symbol)
-            await self.ib.qualifyContractsAsync(stock)
+            qualified = await self.ib.qualifyContractsAsync(stock)
+            if qualified:
+                stock = qualified[0]
             
             # Create order
             if order_type == 'MKT':
@@ -671,7 +673,7 @@ class TWSConnection:
             trade = self.ib.placeOrder(stock, order)
             
             # Wait for order to be acknowledged
-            await asyncio.sleep(2)
+            await _async_safe_sleep(2)
             
             logger.info(f"Placed {action} order for {quantity} shares of {symbol} at {limit_price if limit_price else 'market price'}")
             
@@ -722,7 +724,9 @@ class TWSConnection:
                 )
                 
                 # Qualify the contract
-                await self.ib.qualifyContractsAsync(ib_contract)
+                qualified = await self.ib.qualifyContractsAsync(ib_contract)
+                if qualified:
+                    ib_contract = qualified[0]
                 
                 # Create combo leg
                 combo_leg = ComboLeg()
@@ -739,26 +743,37 @@ class TWSConnection:
             if order_type == 'MKT':
                 order = MarketOrder('BUY', 1)  # Quantity 1 for combo
             else:
-                # For limit orders, use the strategy's net debit/credit
-                limit_price = abs(strategy.net_debit_credit)
+                # For limit orders, get the net debit/credit
+                if hasattr(strategy, 'calculate_net_debit_credit'):
+                    # If it's a BaseStrategy with async method
+                    net_debit_credit = await strategy.calculate_net_debit_credit()
+                elif hasattr(strategy, 'net_debit_credit'):
+                    # If it's a Strategy dataclass with property
+                    net_debit_credit = strategy.net_debit_credit
+                else:
+                    # Fallback - calculate from legs
+                    net_debit_credit = sum(leg.cost for leg in strategy.legs) if strategy.legs else 0
+                    
+                limit_price = abs(net_debit_credit)
                 order = LimitOrder('BUY', 1, limit_price)
             
             # Place the order
             trade = self.ib.placeOrder(combo, order)
             
             # Wait for order to be acknowledged
-            await asyncio.sleep(2)
+            await _async_safe_sleep(2)
             
             return {
                 'order_id': trade.order.orderId,
-                'status': trade.orderStatus.status,
-                'strategy': strategy.name,
-                'max_loss': strategy.max_loss,
-                'max_profit': strategy.max_profit
+                'status': trade.orderStatus.status if hasattr(trade, 'orderStatus') else 'Submitted',
+                'strategy': strategy.name if hasattr(strategy, 'name') else 'Options Strategy',
+                'max_loss': strategy.max_loss if hasattr(strategy, 'max_loss') else 0,
+                'max_profit': strategy.max_profit if hasattr(strategy, 'max_profit') else 0
             }
             
         except Exception as e:
-            logger.error(f"Error placing combo order for {strategy.name}: {e}")
+            strategy_name = getattr(strategy, 'name', 'Unknown Strategy')
+            logger.error(f"Error placing combo order for {strategy_name}: {e}")
             raise TWSConnectionError(f"Failed to place combo order: {e}")
 
 # Global connection instance

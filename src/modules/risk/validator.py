@@ -5,7 +5,11 @@ Provides safety checks, confirmation validation, and trading constraints enforce
 
 import asyncio
 from typing import Dict, Any, Optional, List
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 
 from src.models import Strategy, OptionContract
 from src.config import config

@@ -9,7 +9,11 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 import aiosqlite
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 
 from src.config import config
 from src.models import OptionContract, OptionRight, Greeks
@@ -205,9 +209,15 @@ class OptionsChainData:
                     
                 return options
         
-        # Fetch fresh data from TWS
-        logger.info(f"Fetching fresh options chain for {symbol}")
-        options = await tws_connection.get_options_chain(symbol, expiry)
+        # Fetch fresh data from TWS with limited market data lines
+        logger.info(f"Fetching fresh options chain for {symbol} (limited to avoid 100 line limit)")
+        # Use limited parameters to stay within IBKR's constraints
+        options = await tws_connection.get_options_chain(
+            symbol, 
+            expiry,
+            max_strikes=5,  # Limit strikes to 5 around ATM
+            strike_range_pct=0.10  # Only ±10% from spot
+        )
         
         # Cache the results
         if use_cache and options:

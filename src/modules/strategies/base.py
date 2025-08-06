@@ -7,10 +7,22 @@ import asyncio
 from abc import ABC, abstractmethod
 from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime, timedelta
-import numpy as np
-from scipy.stats import norm
-from scipy.optimize import brentq
-from loguru import logger
+
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
+
+try:
+    import numpy as np
+    from scipy.stats import norm
+    from scipy.optimize import brentq
+except ImportError:
+    logger.warning("SciPy not installed, some probability calculations may be unavailable")
+    np = None
+    norm = None
+    brentq = None
 
 try:
     from py_vollib.black_scholes import black_scholes
@@ -27,6 +39,11 @@ from src.models import (
 
 class StrategyCalculationError(Exception):
     """Custom exception for strategy calculation errors."""
+    pass
+
+
+class StrategyValidationError(Exception):
+    """Custom exception for strategy validation errors."""
     pass
 
 
@@ -175,6 +192,10 @@ class BaseStrategy(ABC):
         Returns:
             Probability of profit as a decimal (0.0 to 1.0)
         """
+        if not np or not norm:
+            logger.warning("SciPy not available, cannot calculate probability of profit")
+            return 0.0
+            
         try:
             breakeven_points = await self.get_breakeven_points()
             
@@ -381,6 +402,10 @@ class BaseStrategy(ABC):
         Returns:
             Breakeven price if found, None otherwise
         """
+        if not brentq:
+            logger.warning("SciPy not available, cannot use numerical breakeven finding")
+            return None
+            
         try:
             min_price, max_price = price_range
             

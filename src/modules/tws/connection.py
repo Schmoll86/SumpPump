@@ -11,6 +11,7 @@ from decimal import Decimal
 
 from ib_async import IB, Contract, Option, Stock, MarketOrder, LimitOrder, ComboLeg, Order, util
 from loguru import logger
+import math
 
 from src.config import config
 from src.models import OptionContract, OptionRight, Greeks, Strategy
@@ -27,6 +28,9 @@ class TWSConnection:
     Uses ib_async for async operations.
     """
     
+    # IBKR market data limits
+    MAX_MARKET_DATA_LINES = 95  # Keep under 100 to be safe
+    
     def __init__(self):
         """Initialize TWS connection manager."""
         self.ib: Optional[IB] = None
@@ -34,6 +38,7 @@ class TWSConnection:
         self.reconnect_attempts: int = 0
         self.max_reconnect_attempts: int = 5
         self._active_subscriptions: Set[Contract] = set()
+        self._subscription_count: int = 0
         
     async def connect(self) -> None:
         """
@@ -139,7 +144,13 @@ class TWSConnection:
         """
         return Option(symbol, expiry, strike, right, exchange)
     
-    async def get_options_chain(self, symbol: str, expiry: Optional[str] = None) -> List[OptionContract]:
+    async def get_options_chain(
+        self, 
+        symbol: str, 
+        expiry: Optional[str] = None,
+        max_strikes: int = 5,
+        strike_range_pct: float = 0.10
+    ) -> List[OptionContract]:
         """
         Fetch full options chain for a symbol with Greeks.
         
@@ -150,125 +161,183 @@ class TWSConnection:
         Returns:
             List of OptionContract objects with Greeks
         """
-        await self.ensure_connected()
-        
-        # Get underlying stock price first
-        stock = self.create_stock_contract(symbol)
-        await self.ib.qualifyContractsAsync(stock)
-        
-        # Get stock ticker for current price
-        stock_ticker = self.ib.reqMktData(stock, '233', False, False)  # 233 = RTVolume
-        await asyncio.sleep(2)  # Wait for data
-        
-        underlying_price = stock_ticker.marketPrice()
-        if not underlying_price or underlying_price <= 0:
-            underlying_price = stock_ticker.last or stock_ticker.close
+        try:
+            await self.ensure_connected()
             
-        logger.info(f"Underlying {symbol} price: {underlying_price}")
-        
-        # Get option chain parameters
-        chains = await self.ib.reqSecDefOptParamsAsync(
-            stock.symbol, '', stock.secType, stock.conId
-        )
-        
-        if not chains:
-            logger.warning(f"No option chains found for {symbol}")
-            return []
-        
-        options_list = []
-        
-        # Filter by expiry if provided
-        target_expiries = []
-        if expiry:
-            # Convert YYYY-MM-DD to YYYYMMDD
-            expiry_date = datetime.strptime(expiry, '%Y-%m-%d').strftime('%Y%m%d')
-            target_expiries = [expiry_date]
-        else:
-            # Get next 3 expiries
-            sorted_expiries = sorted(set(chain.expirations for chain in chains for chain in chain.expirations))
-            target_expiries = sorted_expiries[:3]
-        
-        for chain in chains:
-            for expiry_str in chain.expirations:
-                if expiry_str not in target_expiries:
-                    continue
+            # Get underlying stock price first
+            stock = self.create_stock_contract(symbol)
+            await self.ib.qualifyContractsAsync(stock)
+            
+            # Get stock ticker for current price
+            stock_ticker = self.ib.reqMktData(stock, '', False, False)
+            self._subscription_count = 1  # Start counting with stock
+            await asyncio.sleep(2)  # Wait for data
+            
+            underlying_price = stock_ticker.marketPrice()
+            if not underlying_price or underlying_price <= 0:
+                underlying_price = stock_ticker.last or stock_ticker.close
+                
+            logger.info(f"Underlying {symbol} price: {underlying_price}")
+            
+            # Get option chain parameters
+            chains = await self.ib.reqSecDefOptParamsAsync(
+                stock.symbol, '', stock.secType, stock.conId
+            )
+            
+            if not chains:
+                logger.warning(f"No option chains found for {symbol}")
+                return []
+            
+            options_list = []
+            
+            # Collect all expiries first
+            all_expiries = set()
+            for chain in chains:
+                all_expiries.update(chain.expirations)
+            sorted_expiries = sorted(all_expiries)
+            
+            # Filter by expiry if provided
+            target_expiries = []
+            if expiry:
+                # Convert YYYY-MM-DD to YYYYMMDD
+                expiry_date = datetime.strptime(expiry, '%Y-%m-%d').strftime('%Y%m%d')
+                if expiry_date in sorted_expiries:
+                    target_expiries = [expiry_date]
+                else:
+                    logger.warning(f"Requested expiry {expiry} not found in available expiries")
+                    target_expiries = sorted_expiries[:1]  # Use closest expiry
+            else:
+                # Get next expiry only (to stay within limits)
+                target_expiries = sorted_expiries[:1]  # Just the nearest expiry
+            
+            for expiry_str in target_expiries:
+            # Find the chain that contains this expiry
+            chain_to_use = None
+            for chain in chains:
+                if expiry_str in chain.expirations:
+                    chain_to_use = chain
+                    break
+            
+            if not chain_to_use:
+                continue
                     
-                # Get strikes around current price (±20%)
-                min_strike = underlying_price * 0.8
-                max_strike = underlying_price * 1.2
+            # Get strikes around current price (using parameters)
+            min_strike = underlying_price * (1 - strike_range_pct)
+            max_strike = underlying_price * (1 + strike_range_pct)
+            
+            relevant_strikes = [s for s in chain_to_use.strikes if min_strike <= s <= max_strike]
+            
+            # Sort by distance from current price and limit
+            relevant_strikes.sort(key=lambda x: abs(x - underlying_price))
+            relevant_strikes = relevant_strikes[:max_strikes]  # Limit number of strikes
                 
-                relevant_strikes = [s for s in chain.strikes if min_strike <= s <= max_strike]
+            logger.info(f"Processing {len(relevant_strikes)} strikes for {expiry_str}")
+            
+            for strike in relevant_strikes:
+                # Check if we're approaching the limit
+                if self._subscription_count >= self.MAX_MARKET_DATA_LINES - 2:
+                    logger.warning(f"Reached market data limit ({self._subscription_count}/{self.MAX_MARKET_DATA_LINES})")
+                    break
                 
-                for strike in relevant_strikes:
-                    for right in ['C', 'P']:
-                        try:
-                            # Create option contract
-                            option = self.create_option_contract(
-                                symbol, expiry_str, strike, right, chain.exchange
-                            )
+                for right in ['C', 'P']:
+                    try:
+                        # Create option contract
+                        option = self.create_option_contract(
+                            symbol, expiry_str, strike, right, chain_to_use.exchange
+                        )
                             
-                            # Qualify contract
-                            await self.ib.qualifyContractsAsync(option)
-                            
-                            # Request market data with Greek computation
-                            ticker = self.ib.reqMktData(
-                                option, 
-                                '100,101,104,105,106',  # Greeks: Option Volume, Open Interest, IV, Delta, etc.
-                                False, 
-                                False
-                            )
-                            self._active_subscriptions.add(option)
-                            
-                            # Wait for data to populate
-                            await asyncio.sleep(0.5)
-                            
-                            # Extract data
-                            if ticker.bid and ticker.ask:
-                                # Parse expiry
-                                expiry_dt = datetime.strptime(expiry_str, '%Y%m%d')
-                                
-                                # Create Greeks object
-                                greeks = Greeks(
-                                    delta=ticker.modelGreeks.delta if ticker.modelGreeks else 0.0,
-                                    gamma=ticker.modelGreeks.gamma if ticker.modelGreeks else 0.0,
-                                    theta=ticker.modelGreeks.theta if ticker.modelGreeks else 0.0,
-                                    vega=ticker.modelGreeks.vega if ticker.modelGreeks else 0.0,
-                                    rho=ticker.modelGreeks.rho if ticker.modelGreeks else None
-                                )
-                                
-                                # Create OptionContract
-                                opt_contract = OptionContract(
-                                    symbol=symbol,
-                                    strike=strike,
-                                    expiry=expiry_dt,
-                                    right=OptionRight.CALL if right == 'C' else OptionRight.PUT,
-                                    bid=ticker.bid or 0.0,
-                                    ask=ticker.ask or 0.0,
-                                    last=ticker.last or 0.0,
-                                    volume=ticker.volume or 0,
-                                    open_interest=ticker.openInterest or 0,
-                                    iv=ticker.modelGreeks.impliedVol if ticker.modelGreeks else 0.0,
-                                    greeks=greeks,
-                                    underlying_price=underlying_price
-                                )
-                                
-                                options_list.append(opt_contract)
-                                logger.debug(f"Added option: {symbol} {expiry_str} {strike} {right}")
-                                
-                        except Exception as e:
-                            logger.warning(f"Error fetching option {symbol} {expiry_str} {strike} {right}: {e}")
+                        # Qualify contract
+                        qualified = await self.ib.qualifyContractsAsync(option)
+                        if not qualified:
+                            logger.debug(f"Could not qualify {symbol} {expiry_str} {strike} {right}")
                             continue
+                        option = qualified[0]  # Use the qualified contract
+                        
+                        # Request market data with Greek computation
+                        ticker = self.ib.reqMktData(
+                            option, 
+                            '',  # Simplified - let IBKR decide what to send
+                            False, 
+                            False
+                        )
+                        self._active_subscriptions.add(option)
+                        self._subscription_count += 1
+                        
+                        # Wait for data to populate
+                        await asyncio.sleep(0.5)
+                            
+                        # Extract data
+                        if ticker.bid is not None and ticker.ask is not None:
+                            # Parse expiry
+                            expiry_dt = datetime.strptime(expiry_str, '%Y%m%d')
+                            
+                            # Create Greeks object (check for attributes)
+                            greeks = Greeks(
+                                delta=0.0,
+                                gamma=0.0,
+                                theta=0.0,
+                                vega=0.0,
+                                rho=None
+                            )
+                            
+                            if hasattr(ticker, 'modelGreeks') and ticker.modelGreeks:
+                                mg = ticker.modelGreeks
+                                if hasattr(mg, 'delta'): greeks.delta = mg.delta or 0.0
+                                if hasattr(mg, 'gamma'): greeks.gamma = mg.gamma or 0.0
+                                if hasattr(mg, 'theta'): greeks.theta = mg.theta or 0.0
+                                if hasattr(mg, 'vega'): greeks.vega = mg.vega or 0.0
+                                if hasattr(mg, 'rho'): greeks.rho = mg.rho
+                            
+                            # Create OptionContract (check attributes)
+                            opt_contract = OptionContract(
+                                symbol=symbol,
+                                strike=strike,
+                                expiry=expiry_dt,
+                                right=OptionRight.CALL if right == 'C' else OptionRight.PUT,
+                                bid=float(ticker.bid) if ticker.bid is not None else 0.0,
+                                ask=float(ticker.ask) if ticker.ask is not None else 0.0,
+                                last=float(ticker.last) if hasattr(ticker, 'last') and ticker.last is not None else 0.0,
+                                volume=int(ticker.volume) if hasattr(ticker, 'volume') and ticker.volume and not math.isnan(ticker.volume) else 0,
+                                open_interest=0,  # Not always available from ticker
+                                iv=mg.impliedVol if hasattr(ticker, 'modelGreeks') and ticker.modelGreeks and hasattr(ticker.modelGreeks, 'impliedVol') else 0.0,
+                                greeks=greeks,
+                                underlying_price=underlying_price
+                            )
+                            
+                            options_list.append(opt_contract)
+                            logger.debug(f"Added option: {symbol} {expiry_str} {strike} {right}")
+                            
+                    except Exception as e:
+                        logger.warning(f"Error fetching option {symbol} {expiry_str} {strike} {right}: {e}")
+                        continue
         
         # Cancel market data subscriptions to free up resources
         for contract in list(self._active_subscriptions):
-            self.ib.cancelMktData(contract)
+            try:
+                self.ib.cancelMktData(contract)
+            except:
+                pass
         self._active_subscriptions.clear()
+        self._subscription_count = 0
         
         # Cancel stock ticker
-        self.ib.cancelMktData(stock)
+        try:
+            self.ib.cancelMktData(stock)
+        except:
+            pass
         
-        logger.info(f"Fetched {len(options_list)} option contracts for {symbol}")
-        return options_list
+            logger.info(f"Fetched {len(options_list)} option contracts for {symbol}")
+            return options_list
+            
+        except Exception as e:
+            logger.error(f"Error fetching options chain for {symbol}: {e}")
+            # Clean up any partial subscriptions
+            try:
+                self._active_subscriptions.clear()
+                self._subscription_count = 0
+            except:
+                pass
+            raise TWSConnectionError(f"Failed to fetch options chain for {symbol}: {e}")
     
     async def subscribe_to_market_data(self, contract: Contract) -> Any:
         """
@@ -356,7 +425,8 @@ class TWSConnection:
         Returns:
             Order placement result
         """
-        await self.ensure_connected()
+        try:
+            await self.ensure_connected()
         
         # Create combo contract
         combo = Contract()
@@ -398,19 +468,23 @@ class TWSConnection:
             limit_price = abs(strategy.net_debit_credit)
             order = LimitOrder('BUY', 1, limit_price)
         
-        # Place the order
-        trade = self.ib.placeOrder(combo, order)
-        
-        # Wait for order to be acknowledged
-        await asyncio.sleep(2)
-        
-        return {
-            'order_id': trade.order.orderId,
-            'status': trade.orderStatus.status,
-            'strategy': strategy.name,
-            'max_loss': strategy.max_loss,
-            'max_profit': strategy.max_profit
-        }
+            # Place the order
+            trade = self.ib.placeOrder(combo, order)
+            
+            # Wait for order to be acknowledged
+            await asyncio.sleep(2)
+            
+            return {
+                'order_id': trade.order.orderId,
+                'status': trade.orderStatus.status,
+                'strategy': strategy.name,
+                'max_loss': strategy.max_loss,
+                'max_profit': strategy.max_profit
+            }
+            
+        except Exception as e:
+            logger.error(f"Error placing combo order for {strategy.name}: {e}")
+            raise TWSConnectionError(f"Failed to place combo order: {e}")
 
 # Global connection instance
 tws_connection = TWSConnection()

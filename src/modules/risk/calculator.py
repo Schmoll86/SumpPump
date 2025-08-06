@@ -5,7 +5,11 @@ Handles position sizing, max risk calculations, margin requirements, and stop lo
 
 import asyncio
 from typing import Dict, Any, Optional, Tuple
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 import numpy as np
 
 from src.models import Strategy, StrategyType, OptionContract

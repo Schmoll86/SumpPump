@@ -459,6 +459,169 @@ async def set_stop_loss(
         "status": "pending_implementation"
     }
 
+# MCP Tool: Get News
+@mcp.tool()
+async def get_news(
+    symbol: str,
+    provider: str = 'all',
+    num_articles: int = 10
+) -> Dict[str, Any]:
+    """
+    Fetch IBKR news articles for a given symbol.
+    
+    Args:
+        symbol: Stock symbol (e.g., 'AAPL')
+        provider: News provider filter ('all', 'dow_jones', 'reuters', etc.)
+        num_articles: Number of articles to retrieve (default 10, max 50)
+    
+    Returns:
+        List of news articles with title, summary, date, and provider
+    """
+    logger.info(f"Fetching news for {symbol} from {provider}")
+    
+    try:
+        # Import TWS connection
+        from src.modules.tws.connection import tws_connection
+        from src.config import config
+        
+        # Validate parameters
+        if num_articles > 50:
+            num_articles = 50
+        if num_articles < 1:
+            num_articles = 1
+        
+        # Check if news subscriptions are enabled
+        if not config.data.subscribe_to_news:
+            return {
+                'error': 'News subscriptions are disabled in configuration',
+                'symbol': symbol,
+                'message': 'Enable SUBSCRIBE_TO_NEWS in environment variables'
+            }
+        
+        # Initialize TWS connection if needed
+        if not tws_connection.connected:
+            await tws_connection.connect()
+        
+        # Create stock contract for news request
+        from ib_async import Stock
+        contract = Stock(symbol, 'SMART', 'USD')
+        
+        # Get qualified contract from TWS
+        qualified_contracts = await tws_connection.ib.qualifyContractsAsync(contract)
+        if not qualified_contracts:
+            return {
+                'error': f'Could not find contract for symbol {symbol}',
+                'symbol': symbol,
+                'message': 'Verify the symbol is valid and traded'
+            }
+        
+        contract = qualified_contracts[0]
+        
+        # Request historical news
+        news_articles = []
+        
+        try:
+            # Use reqHistoricalNews to get recent news
+            # Note: This requires news feed permissions in IBKR account
+            from datetime import datetime, timedelta
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=7)  # Last 7 days
+            
+            # Format dates for IBKR API (YYYYMMDD HH:MM:SS)
+            start_str = start_date.strftime('%Y%m%d %H:%M:%S')
+            end_str = end_date.strftime('%Y%m%d %H:%M:%S')
+            
+            # Request historical news
+            historical_news = await tws_connection.ib.reqHistoricalNewsAsync(
+                conId=contract.conId,
+                providerCodes=provider if provider != 'all' else '',
+                startDateTime=start_str,
+                endDateTime=end_str,
+                totalResults=num_articles
+            )
+            
+            # Process news articles
+            for news_item in historical_news[:num_articles]:
+                # Get article details if available
+                article_detail = None
+                try:
+                    if hasattr(news_item, 'articleId'):
+                        article_detail = await tws_connection.ib.reqNewsArticleAsync(
+                            providerCode=news_item.providerCode,
+                            articleId=news_item.articleId
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not fetch article detail: {e}")
+                
+                # Build article data
+                article_data = {
+                    'title': getattr(news_item, 'headline', 'No title available'),
+                    'provider': getattr(news_item, 'providerCode', 'Unknown'),
+                    'date': getattr(news_item, 'time', ''),
+                    'summary': getattr(news_item, 'summary', ''),
+                    'article_id': getattr(news_item, 'articleId', ''),
+                }
+                
+                # Add full article text if available
+                if article_detail and hasattr(article_detail, 'articleText'):
+                    # Truncate long articles for readability
+                    full_text = article_detail.articleText
+                    if len(full_text) > 1000:
+                        article_data['summary'] = full_text[:1000] + '...'
+                    else:
+                        article_data['summary'] = full_text
+                
+                news_articles.append(article_data)
+        
+        except Exception as news_error:
+            # Handle specific news permission errors
+            error_msg = str(news_error).lower()
+            if 'news' in error_msg and ('permission' in error_msg or 'subscription' in error_msg):
+                return {
+                    'error': 'News feed access not available',
+                    'symbol': symbol,
+                    'message': 'Your IBKR account may not have news feed subscriptions enabled. Check your market data subscriptions.',
+                    'suggestion': 'Contact IBKR to enable news feeds or upgrade your market data package'
+                }
+            else:
+                raise news_error
+        
+        # Return results
+        result = {
+            'symbol': symbol,
+            'provider': provider,
+            'articles': news_articles,
+            'count': len(news_articles),
+            'requested_count': num_articles,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        if not news_articles:
+            result['message'] = f'No news articles found for {symbol} in the last 7 days'
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch news for {symbol}: {e}")
+        
+        # Provide helpful error messages based on error type
+        error_msg = str(e).lower()
+        if 'connection' in error_msg:
+            message = 'TWS connection error. Ensure TWS is running and connected.'
+        elif 'permission' in error_msg or 'subscription' in error_msg:
+            message = 'News feed permission error. Check your IBKR market data subscriptions.'
+        elif 'contract' in error_msg:
+            message = f'Invalid symbol: {symbol}. Verify the symbol is correct.'
+        else:
+            message = 'News request failed. Check TWS connection and permissions.'
+        
+        return {
+            'error': str(e),
+            'symbol': symbol,
+            'provider': provider,
+            'message': message
+        }
+
 # Main entry point
 def main():
     """Run the MCP server."""

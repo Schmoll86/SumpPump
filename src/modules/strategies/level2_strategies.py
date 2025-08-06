@@ -20,7 +20,12 @@ NOT ALLOWED (Excluded):
 import asyncio
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from loguru import logger
+
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 
 from src.modules.strategies.base import BaseStrategy
 from src.models import (
@@ -62,21 +67,28 @@ class SingleOption(BaseStrategy):
         super().__init__(name, strategy_type, [option_leg])
         self.strike = option_leg.contract.strike
     
+    async def calculate_pnl(self, underlying_price: float) -> float:
+        """Calculate P&L at given underlying price."""
+        option_value = self._option_value_at_expiry(self.legs[0].contract, underlying_price)
+        premium_paid = abs(await self.calculate_net_debit_credit())
+        return (option_value * 100) - premium_paid
+    
     async def calculate_max_profit(self) -> float:
         """Calculate maximum profit (unlimited for long options)."""
         if self.legs[0].contract.right == OptionRight.CALL:
             return float('inf')  # Unlimited upside for long calls
         else:
             # Max profit for long put = strike - premium
-            return (self.strike - abs(self.net_debit_credit)) * 100
+            premium = abs(await self.calculate_net_debit_credit())
+            return (self.strike * 100) - premium
     
     async def calculate_max_loss(self) -> float:
         """Calculate maximum loss (premium paid)."""
-        return abs(self.net_debit_credit)
+        return -abs(await self.calculate_net_debit_credit())
     
     async def get_breakeven_points(self) -> List[float]:
         """Calculate breakeven points."""
-        premium_per_share = abs(self.net_debit_credit) / 100
+        premium_per_share = abs(await self.calculate_net_debit_credit()) / 100
         
         if self.legs[0].contract.right == OptionRight.CALL:
             # Breakeven for long call = strike + premium
@@ -122,17 +134,29 @@ class BullCallSpread(BaseStrategy):
         self.short_strike = short_call.contract.strike
         self.strike_width = self.short_strike - self.long_strike
     
+    async def calculate_pnl(self, underlying_price: float) -> float:
+        """Calculate P&L at expiration."""
+        # Long call value
+        long_value = max(0, underlying_price - self.long_strike)
+        # Short call value (negative because we sold it)
+        short_value = -max(0, underlying_price - self.short_strike)
+        # Total value at expiration
+        total_value = (long_value + short_value) * 100
+        # Subtract net premium paid
+        premium_paid = abs(await self.calculate_net_debit_credit())
+        return total_value - premium_paid
+    
     async def calculate_max_profit(self) -> float:
         """Max profit = Strike width - Net debit."""
-        return (self.strike_width * 100) - abs(self.net_debit_credit)
+        return (self.strike_width * 100) - abs(await self.calculate_net_debit_credit())
     
     async def calculate_max_loss(self) -> float:
         """Max loss = Net debit paid."""
-        return abs(self.net_debit_credit)
+        return -abs(await self.calculate_net_debit_credit())
     
     async def get_breakeven_points(self) -> List[float]:
         """Breakeven = Long strike + Net debit."""
-        return [self.long_strike + (abs(self.net_debit_credit) / 100)]
+        return [self.long_strike + (abs(await self.calculate_net_debit_credit()) / 100)]
 
 
 class BearPutSpread(BaseStrategy):
@@ -171,17 +195,29 @@ class BearPutSpread(BaseStrategy):
         self.short_strike = short_put.contract.strike
         self.strike_width = self.long_strike - self.short_strike
     
+    async def calculate_pnl(self, underlying_price: float) -> float:
+        """Calculate P&L at expiration."""
+        # Long put value
+        long_value = max(0, self.long_strike - underlying_price)
+        # Short put value (negative because we sold it)
+        short_value = -max(0, self.short_strike - underlying_price)
+        # Total value at expiration
+        total_value = (long_value + short_value) * 100
+        # Subtract net premium paid
+        premium_paid = abs(await self.calculate_net_debit_credit())
+        return total_value - premium_paid
+    
     async def calculate_max_profit(self) -> float:
         """Max profit = Strike width - Net debit."""
-        return (self.strike_width * 100) - abs(self.net_debit_credit)
+        return (self.strike_width * 100) - abs(await self.calculate_net_debit_credit())
     
     async def calculate_max_loss(self) -> float:
         """Max loss = Net debit paid."""
-        return abs(self.net_debit_credit)
+        return -abs(await self.calculate_net_debit_credit())
     
     async def get_breakeven_points(self) -> List[float]:
         """Breakeven = Long strike - Net debit."""
-        return [self.long_strike - (abs(self.net_debit_credit) / 100)]
+        return [self.long_strike - (abs(await self.calculate_net_debit_credit()) / 100)]
 
 
 class LongStraddle(BaseStrategy):
@@ -215,17 +251,29 @@ class LongStraddle(BaseStrategy):
         
         self.strike = call_leg.contract.strike
     
+    async def calculate_pnl(self, underlying_price: float) -> float:
+        """Calculate P&L at expiration."""
+        # Call value
+        call_value = max(0, underlying_price - self.strike)
+        # Put value
+        put_value = max(0, self.strike - underlying_price)
+        # Total value at expiration
+        total_value = (call_value + put_value) * 100
+        # Subtract net premium paid
+        premium_paid = abs(await self.calculate_net_debit_credit())
+        return total_value - premium_paid
+    
     async def calculate_max_profit(self) -> float:
         """Max profit = Unlimited."""
         return float('inf')
     
     async def calculate_max_loss(self) -> float:
         """Max loss = Total premium paid."""
-        return abs(self.net_debit_credit)
+        return -abs(await self.calculate_net_debit_credit())
     
     async def get_breakeven_points(self) -> List[float]:
         """Two breakevens: Strike ± Total premium."""
-        premium_per_share = abs(self.net_debit_credit) / 100
+        premium_per_share = abs(await self.calculate_net_debit_credit()) / 100
         return [
             self.strike - premium_per_share,  # Lower breakeven
             self.strike + premium_per_share   # Upper breakeven
@@ -264,17 +312,29 @@ class LongStrangle(BaseStrategy):
         self.call_strike = call_leg.contract.strike
         self.put_strike = put_leg.contract.strike
     
+    async def calculate_pnl(self, underlying_price: float) -> float:
+        """Calculate P&L at expiration."""
+        # Call value
+        call_value = max(0, underlying_price - self.call_strike)
+        # Put value
+        put_value = max(0, self.put_strike - underlying_price)
+        # Total value at expiration
+        total_value = (call_value + put_value) * 100
+        # Subtract net premium paid
+        premium_paid = abs(await self.calculate_net_debit_credit())
+        return total_value - premium_paid
+    
     async def calculate_max_profit(self) -> float:
         """Max profit = Unlimited."""
         return float('inf')
     
     async def calculate_max_loss(self) -> float:
         """Max loss = Total premium paid."""
-        return abs(self.net_debit_credit)
+        return -abs(await self.calculate_net_debit_credit())
     
     async def get_breakeven_points(self) -> List[float]:
         """Two breakevens: Put strike - premium, Call strike + premium."""
-        premium_per_share = abs(self.net_debit_credit) / 100
+        premium_per_share = abs(await self.calculate_net_debit_credit()) / 100
         return [
             self.put_strike - premium_per_share,   # Lower breakeven
             self.call_strike + premium_per_share   # Upper breakeven
@@ -314,6 +374,18 @@ class CoveredCall(BaseStrategy):
         self.strike = call_leg.contract.strike
         self.premium_received = abs(call_leg.cost)  # Positive for credit
     
+    async def calculate_pnl(self, underlying_price: float) -> float:
+        """Calculate P&L at expiration."""
+        # Stock P&L (assumed bought at current underlying price)
+        stock_price = self.legs[0].contract.underlying_price
+        stock_pnl = (underlying_price - stock_price) * self.stock_shares
+        
+        # Call P&L (short call)
+        call_value = -max(0, underlying_price - self.strike) * 100 * self.legs[0].quantity
+        
+        # Total P&L = Stock gain/loss + Call premium received + Call assignment cost
+        return stock_pnl + call_value + self.premium_received
+    
     async def calculate_max_profit(self) -> float:
         """Max profit = Strike - Stock price + Premium (if assigned)."""
         # Assuming current stock price is underlying_price
@@ -323,7 +395,7 @@ class CoveredCall(BaseStrategy):
     async def calculate_max_loss(self) -> float:
         """Max loss = Stock price - Premium (if stock goes to 0)."""
         stock_price = self.legs[0].contract.underlying_price
-        return (stock_price * 100) - self.premium_received
+        return -((stock_price * 100) - self.premium_received)
     
     async def get_breakeven_points(self) -> List[float]:
         """Breakeven = Stock price - Premium received."""
@@ -364,6 +436,18 @@ class ProtectivePut(BaseStrategy):
         self.strike = put_leg.contract.strike
         self.premium_paid = abs(put_leg.cost)
     
+    async def calculate_pnl(self, underlying_price: float) -> float:
+        """Calculate P&L at expiration."""
+        # Stock P&L (assumed bought at current underlying price)
+        stock_price = self.legs[0].contract.underlying_price
+        stock_pnl = (underlying_price - stock_price) * self.stock_shares
+        
+        # Put P&L (long put)
+        put_value = max(0, self.strike - underlying_price) * 100 * self.legs[0].quantity
+        
+        # Total P&L = Stock gain/loss + Put value - Put premium paid
+        return stock_pnl + put_value - self.premium_paid
+    
     async def calculate_max_profit(self) -> float:
         """Max profit = Unlimited (stock can go up infinitely)."""
         return float('inf')
@@ -371,7 +455,7 @@ class ProtectivePut(BaseStrategy):
     async def calculate_max_loss(self) -> float:
         """Max loss = Stock price - Strike + Premium paid."""
         stock_price = self.legs[0].contract.underlying_price
-        return ((stock_price - self.strike) * 100) + self.premium_paid
+        return -(((stock_price - self.strike) * 100) + self.premium_paid)
     
     async def get_breakeven_points(self) -> List[float]:
         """Breakeven = Stock price + Premium paid."""
@@ -414,22 +498,41 @@ class Collar(BaseStrategy):
         self.put_strike = put_leg.contract.strike
         self.call_strike = call_leg.contract.strike
     
+    async def calculate_pnl(self, underlying_price: float) -> float:
+        """Calculate P&L at expiration."""
+        # Stock P&L (assumed bought at current underlying price)
+        stock_price = self.legs[0].contract.underlying_price
+        stock_pnl = (underlying_price - stock_price) * self.stock_shares
+        
+        # Put P&L (long put)
+        put_value = max(0, self.put_strike - underlying_price) * 100 * self.legs[0].quantity
+        
+        # Call P&L (short call)
+        call_value = -max(0, underlying_price - self.call_strike) * 100 * self.legs[1].quantity
+        
+        # Net option cost
+        net_option_cost = await self.calculate_net_debit_credit()
+        
+        # Total P&L
+        return stock_pnl + put_value + call_value - net_option_cost
+    
     async def calculate_max_profit(self) -> float:
         """Max profit = Call strike - Stock price + Net credit/debit."""
         stock_price = self.legs[0].contract.underlying_price
-        net_option_cost = self.net_debit_credit
+        net_option_cost = await self.calculate_net_debit_credit()
         return ((self.call_strike - stock_price) * 100) - net_option_cost
     
     async def calculate_max_loss(self) -> float:
         """Max loss = Stock price - Put strike + Net debit."""
         stock_price = self.legs[0].contract.underlying_price
-        net_option_cost = abs(self.net_debit_credit) if self.net_debit_credit < 0 else 0
-        return ((stock_price - self.put_strike) * 100) + net_option_cost
+        net_option_cost_abs = abs(await self.calculate_net_debit_credit())
+        net_option_cost = net_option_cost_abs if await self.calculate_net_debit_credit() < 0 else 0
+        return -(((stock_price - self.put_strike) * 100) + net_option_cost)
     
     async def get_breakeven_points(self) -> List[float]:
         """Breakeven = Stock price + Net debit (or - Net credit)."""
         stock_price = self.legs[0].contract.underlying_price
-        adjustment = self.net_debit_credit / 100
+        adjustment = (await self.calculate_net_debit_credit()) / 100
         return [stock_price - adjustment]
 
 
@@ -486,18 +589,36 @@ class LongIronCondor(BaseStrategy):
         self.put_spread_width = short_put.contract.strike - long_put.contract.strike
         self.call_spread_width = long_call.contract.strike - short_call.contract.strike
     
+    async def calculate_pnl(self, underlying_price: float) -> float:
+        """Calculate P&L at expiration."""
+        # Long put value
+        long_put_value = max(0, self.legs[0].contract.strike - underlying_price)
+        # Short put value (negative because we sold it)
+        short_put_value = -max(0, self.legs[1].contract.strike - underlying_price)
+        # Short call value (negative because we sold it)
+        short_call_value = -max(0, underlying_price - self.legs[2].contract.strike)
+        # Long call value
+        long_call_value = max(0, underlying_price - self.legs[3].contract.strike)
+        
+        # Total value at expiration
+        total_value = (long_put_value + short_put_value + short_call_value + long_call_value) * 100
+        
+        # Subtract net premium paid
+        premium_paid = abs(await self.calculate_net_debit_credit())
+        return total_value - premium_paid
+    
     async def calculate_max_profit(self) -> float:
         """Max profit = Spread width - Net debit."""
         max_spread_width = max(self.put_spread_width, self.call_spread_width)
-        return (max_spread_width * 100) - abs(self.net_debit_credit)
+        return (max_spread_width * 100) - abs(await self.calculate_net_debit_credit())
     
     async def calculate_max_loss(self) -> float:
         """Max loss = Net debit paid."""
-        return abs(self.net_debit_credit)
+        return -abs(await self.calculate_net_debit_credit())
     
     async def get_breakeven_points(self) -> List[float]:
         """Two breakevens based on the debit paid."""
-        debit_per_share = abs(self.net_debit_credit) / 100
+        debit_per_share = abs(await self.calculate_net_debit_credit()) / 100
         return [
             self.legs[1].contract.strike - debit_per_share,  # Lower breakeven
             self.legs[2].contract.strike + debit_per_share   # Upper breakeven

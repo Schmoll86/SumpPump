@@ -1576,6 +1576,222 @@ async def cancel_order(
         }
 
 
+@mcp.tool(name="trade_create_conditional_order")
+async def create_conditional_order(
+    symbol: str,
+    contract_type: str,  # 'STOCK', 'OPTION'
+    action: str,  # 'BUY', 'SELL', 'BUY_TO_CLOSE', 'SELL_TO_CLOSE'
+    quantity: int,
+    order_type: str,  # 'MKT', 'LMT', 'STP', 'STP_LMT'
+    conditions: List[Dict[str, Any]],  # List of condition specifications
+    limit_price: Optional[float] = None,
+    stop_price: Optional[float] = None,
+    strike: Optional[float] = None,
+    expiry: Optional[str] = None,
+    right: Optional[str] = None,
+    trigger_method: str = 'Last',
+    outside_rth: bool = False
+) -> Dict[str, Any]:
+    """
+    Create a conditional order with multiple trigger conditions.
+    Perfect for buy-to-close orders on short options.
+    
+    Args:
+        symbol: Underlying symbol
+        contract_type: 'STOCK' or 'OPTION'
+        action: Order action (BUY, SELL, BUY_TO_CLOSE, SELL_TO_CLOSE)
+        quantity: Number of shares/contracts
+        order_type: Order type (MKT, LMT, STP, STP_LMT)
+        conditions: List of conditions, each dict containing:
+            - type: 'price', 'time', 'margin', 'percent_change'
+            - operator: 'above', 'below', 'at'
+            - value: Trigger value
+            - conj_type: 'AND' or 'OR'
+        limit_price: Limit price for LMT orders
+        stop_price: Stop price for STP orders
+        strike: Option strike price
+        expiry: Option expiration (YYYYMMDD)
+        right: Option right ('C' or 'P')
+        trigger_method: How to evaluate price conditions
+        outside_rth: Allow triggering outside regular hours
+    
+    Returns:
+        Order confirmation with details
+    
+    Example for buy-to-close short 645 call:
+        create_conditional_order(
+            symbol='SPY',
+            contract_type='OPTION',
+            action='BUY_TO_CLOSE',
+            quantity=1,
+            order_type='MKT',
+            conditions=[{'type': 'price', 'operator': 'above', 'value': 650}],
+            strike=645,
+            expiry='20250117',
+            right='C'
+        )
+    """
+    logger.info(f"Creating conditional {action} order for {symbol}")
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.execution.conditional_orders import create_conditional_order as create_conditional_impl
+        
+        # Ensure connection
+        await tws_connection.ensure_connected()
+        
+        result = await create_conditional_impl(
+            tws_connection=tws_connection,
+            symbol=symbol,
+            contract_type=contract_type,
+            action=action,
+            quantity=quantity,
+            order_type=order_type,
+            conditions=conditions,
+            limit_price=limit_price,
+            stop_price=stop_price,
+            strike=strike,
+            expiry=expiry,
+            right=right,
+            trigger_method=trigger_method,
+            outside_rth=outside_rth
+        )
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to create conditional order: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': 'Conditional order creation failed. Check parameters and connection.'
+        }
+
+
+@mcp.tool(name="trade_buy_to_close")
+async def buy_to_close_option(
+    symbol: str,
+    strike: float,
+    expiry: str,  # YYYYMMDD
+    right: str,  # 'C' or 'P'
+    quantity: int,
+    order_type: str = 'MKT',
+    limit_price: Optional[float] = None,
+    trigger_price: Optional[float] = None,
+    trigger_condition: str = 'immediate'  # 'immediate', 'above', 'below'
+) -> Dict[str, Any]:
+    """
+    Create a buy-to-close order for a short option position.
+    This closes short calls or puts to reduce risk.
+    
+    Args:
+        symbol: Underlying symbol
+        strike: Option strike price
+        expiry: Option expiration (YYYYMMDD)
+        right: 'C' for call, 'P' for put
+        quantity: Number of contracts to close
+        order_type: 'MKT' or 'LMT'
+        limit_price: Limit price if using LMT order
+        trigger_price: Price to trigger the order (optional)
+        trigger_condition: When to trigger ('immediate', 'above', 'below')
+    
+    Returns:
+        Order confirmation
+    
+    Example to close short 645 call:
+        buy_to_close_option(
+            symbol='SPY',
+            strike=645,
+            expiry='20250117',
+            right='C',
+            quantity=1
+        )
+    """
+    logger.info(f"Creating buy-to-close order for {quantity} {symbol} {strike}{right}")
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        
+        # Ensure connection
+        await tws_connection.ensure_connected()
+        
+        if trigger_condition == 'immediate' or trigger_price is None:
+            # Place immediate buy-to-close order
+            from ib_async import Option, MarketOrder, LimitOrder
+            
+            # Create option contract
+            option = Option(symbol, expiry, strike, right, 'SMART')
+            
+            # Qualify contract
+            qualified = await tws_connection.ib.qualifyContractsAsync(option)
+            if qualified:
+                option = qualified[0]
+            
+            # Create order
+            if order_type == 'MKT':
+                order = MarketOrder('BUY', quantity)
+            else:
+                if limit_price is None:
+                    return {
+                        'error': 'Limit price required',
+                        'message': 'Limit price must be specified for LMT orders',
+                        'status': 'failed'
+                    }
+                order = LimitOrder('BUY', quantity, limit_price)
+            
+            # Place order
+            trade = tws_connection.ib.placeOrder(option, order)
+            
+            await asyncio.sleep(2)
+            
+            return {
+                'status': 'success',
+                'order_id': trade.order.orderId,
+                'action': 'BUY_TO_CLOSE',
+                'symbol': symbol,
+                'strike': strike,
+                'expiry': expiry,
+                'right': right,
+                'quantity': quantity,
+                'order_type': order_type,
+                'limit_price': limit_price,
+                'message': f'Buy-to-close order placed for {quantity} {symbol} {strike}{right} contracts',
+                'timestamp': datetime.now().isoformat()
+            }
+            
+        else:
+            # Create conditional buy-to-close order
+            from src.modules.execution.conditional_orders import create_buy_to_close_order
+            
+            # Build trigger conditions
+            conditions = [{
+                'type': 'price',
+                'operator': trigger_condition,
+                'value': trigger_price,
+                'conj_type': 'AND'
+            }]
+            
+            result = await create_buy_to_close_order(
+                tws_connection=tws_connection,
+                symbol=symbol,
+                strike=strike,
+                expiry=expiry,
+                right=right,
+                quantity=quantity,
+                trigger_conditions=conditions,
+                order_type=order_type,
+                limit_price=limit_price
+            )
+            return result
+            
+    except Exception as e:
+        logger.error(f"Failed to create buy-to-close order: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed',
+            'message': 'Buy-to-close order failed. Check position and parameters.'
+        }
+
+
 @mcp.tool(name="trade_set_price_alert")
 async def set_price_alert(
     symbol: str,

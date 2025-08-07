@@ -283,6 +283,9 @@ async def create_extended_hours_order(
         # Set extended hours parameters
         order.outsideRth = outside_rth
         order.tif = time_in_force
+        # CRITICAL FIX: Add explicit account field
+        order.account = "U16348403"
+        order.transmit = True  # Transmit order immediately
         
         # Set GTD expiration if specified
         if time_in_force == "GTD":
@@ -401,6 +404,9 @@ async def modify_for_extended_hours(
         
         if new_tif:
             target_order.tif = new_tif
+        
+        # CRITICAL FIX: Ensure account is set
+        target_order.account = "U16348403"
         
         # Get the contract for this order
         open_trades = tws_connection.ib.openTrades()

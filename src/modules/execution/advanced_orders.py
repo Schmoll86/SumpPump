@@ -115,6 +115,11 @@ async def close_position(
                 'status': 'failed'
             }
         
+        # CRITICAL FIX: Add explicit account and time_in_force
+        order.account = "U16348403"
+        order.tif = "GTC"
+        order.transmit = True  # Transmit order immediately
+        
         # Add SMART routing for best execution
         order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
         
@@ -226,6 +231,9 @@ async def set_stop_loss(
             stop_order.totalQuantity = quantity
             stop_order.auxPrice = stop_price  # Stop trigger price
             stop_order.tif = 'GTC'  # Good till cancelled
+            # CRITICAL FIX: Add explicit account field
+            stop_order.account = "U16348403"
+            stop_order.transmit = True  # Transmit order immediately
             
         elif stop_type == 'trailing':
             # Create trailing stop order
@@ -242,6 +250,9 @@ async def set_stop_loss(
                 stop_order.trailStopPrice = stop_price  # Initial stop price
             
             stop_order.tif = 'GTC'
+            # CRITICAL FIX: Add explicit account field
+            stop_order.account = "U16348403"
+            stop_order.transmit = True  # Transmit order immediately
         else:
             return {
                 'error': 'Invalid stop type',
@@ -611,7 +622,8 @@ async def roll_option_position(
             roll_expiry,
             roll_strike,
             old_contract.right,
-            'SMART'
+            'SMART',
+            currency='USD'
         )
         
         # Qualify the new contract
@@ -649,6 +661,9 @@ async def roll_option_position(
         
         # Create order for the roll
         roll_order = MarketOrder('BUY' if position_to_roll.position > 0 else 'SELL', quantity)
+        roll_order.account = "U16348403"
+        roll_order.tif = "GTC"
+        roll_order.transmit = True
         roll_order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
         
         # Place the roll order
@@ -758,6 +773,9 @@ async def set_price_alert(
             else:
                 action_order = MarketOrder('BUY', abs(position_to_close.position))
             
+            action_order.account = "U16348403"
+            action_order.tif = "GTC"
+            action_order.transmit = True
             action_order.conditions = [price_condition]
             action_order.conditionsIgnoreRth = True
             action_order.conditionsCancelOrder = False
@@ -785,6 +803,9 @@ async def set_price_alert(
             else:
                 action_order = MarketOrder(order_action, quantity)
             
+            action_order.account = "U16348403"
+            action_order.tif = "GTC"
+            action_order.transmit = True
             action_order.conditions = [price_condition]
             action_order.conditionsIgnoreRth = True
             action_order.conditionsCancelOrder = False

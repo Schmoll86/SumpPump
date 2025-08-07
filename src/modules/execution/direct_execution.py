@@ -152,6 +152,11 @@ async def direct_close_position(
                 'message': f'Order type must be MKT or LMT, got {order_type}'
             }
         
+        # CRITICAL FIX: Add explicit account and time_in_force
+        order.account = "U16348403"
+        order.tif = "GTC"  # Good Till Cancelled
+        order.transmit = True  # Transmit order immediately
+        
         # Get initial position for verification
         initial_position = target_position.position
         

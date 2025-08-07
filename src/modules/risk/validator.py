@@ -441,11 +441,11 @@ class RiskValidator:
             
             # MANDATORY: Display max loss
             max_loss = abs(strategy.max_loss)
-            print(f"\n{'='*50}")
-            print(f"MAX LOSS: ${max_loss:,.2f}")
-            print(f"REQUIRED CAPITAL: ${strategy.required_capital:,.2f}")
-            print(f"ACCOUNT IMPACT: {(position_value/account_value)*100:.1f}%")
-            print(f"{'='*50}\n")
+            logger.critical("="*50)
+            logger.critical(f"MAX LOSS: ${max_loss:,.2f}")
+            logger.critical(f"REQUIRED CAPITAL: ${strategy.required_capital:,.2f}")
+            logger.critical(f"ACCOUNT IMPACT: {(position_value/account_value)*100:.1f}%")
+            logger.critical("="*50)
             
             return {
                 'validation_passed': True,
@@ -488,19 +488,19 @@ class RiskValidator:
             )
             
             # Mandatory display
-            print(f"\n{'='*60}")
-            print(f"MANDATORY STOP LOSS SETUP")
-            print(f"{'='*60}")
-            print(f"Strategy: {strategy.name}")
-            print(f"Entry Price: ${execution_price:.2f}")
-            print(f"Suggested Stop: ${stop_recommendation['fixed_stop_loss']['price']:.2f}")
-            print(f"Stop Loss Amount: ${stop_recommendation['fixed_stop_loss']['amount']:.2f}")
-            print(f"Stop Percentage: {stop_recommendation['fixed_stop_loss']['percent']:.1f}%")
-            print(f"")
-            print(f"RECOMMENDATION: {stop_recommendation['recommendation']}")
-            print(f"{'='*60}")
-            print(f"SET STOP LOSS NOW - DO NOT SKIP THIS STEP!")
-            print(f"{'='*60}\n")
+            logger.critical("="*60)
+            logger.critical("MANDATORY STOP LOSS SETUP")
+            logger.critical("="*60)
+            logger.critical(f"Strategy: {strategy.name}")
+            logger.critical(f"Entry Price: ${execution_price:.2f}")
+            logger.critical(f"Suggested Stop: ${stop_recommendation['fixed_stop_loss']['price']:.2f}")
+            logger.critical(f"Stop Loss Amount: ${stop_recommendation['fixed_stop_loss']['amount']:.2f}")
+            logger.critical(f"Stop Percentage: {stop_recommendation['fixed_stop_loss']['percent']:.1f}%")
+            logger.critical("")
+            logger.critical(f"RECOMMENDATION: {stop_recommendation['recommendation']}")
+            logger.critical("="*60)
+            logger.critical("SET STOP LOSS NOW - DO NOT SKIP THIS STEP!")
+            logger.critical("="*60)
             
             return {
                 'stop_loss_prompted': True,

@@ -17,7 +17,7 @@ if not confirm_token == "USER_CONFIRMED":
     raise ValueError("Explicit confirmation required")
 
 # 2. Max Loss Display
-print(f"MAX LOSS: ${strategy.max_loss:,.2f}")
+logger.critical(f"MAX LOSS: ${strategy.max_loss:,.2f}")
 
 # 3. Position Size Limit
 if position_value > account_value * 0.05:

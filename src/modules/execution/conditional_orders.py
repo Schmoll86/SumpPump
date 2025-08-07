@@ -79,7 +79,7 @@ async def create_conditional_order(
                     'status': 'failed'
                 }
             
-            contract = Option(symbol, expiry, strike, right, 'SMART')
+            contract = Option(symbol, expiry, strike, right, 'SMART', currency='USD')
             
         else:  # STOCK
             contract = Stock(symbol, 'SMART', 'USD')
@@ -224,6 +224,8 @@ async def create_conditional_order(
         # Set additional order attributes
         order.tif = 'GTC'  # Good Till Cancelled
         order.transmit = True
+        # CRITICAL FIX: Add explicit account field
+        order.account = "U16348403"
         
         # Add SMART routing
         order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]

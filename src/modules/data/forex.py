@@ -297,6 +297,10 @@ class ForexTrading:
             else:
                 raise OrderValidationError(f"Unsupported order type: {order_type}")
             
+            # CRITICAL FIX: Add explicit account and time_in_force
+            order.account = "U16348403"
+            order.tif = "GTC"
+            
             # Place order
             logger.info(f"Placing FX {side} order: {amount:,.0f} {base} vs {quote} @ {order_type}")
             trade = self.tws.ib.placeOrder(contract, order)

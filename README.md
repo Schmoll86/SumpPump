@@ -1,10 +1,10 @@
 # SumpPump - IBKR Trading Assistant
 
-Production-ready MCP (Model Context Protocol) server that bridges Claude Desktop with Interactive Brokers TWS for conversational options trading and market analysis. All 27 trading tools are fully integrated and operational.
+Production-ready MCP (Model Context Protocol) server that bridges Claude Desktop with Interactive Brokers TWS for conversational options trading and market analysis. All 37 trading tools are fully integrated and operational with V2 architecture.
 
 ## ✅ Current Status (v2.0 - January 2025)
 
-- **27 MCP Tools**: Fully integrated and operational
+- **37 MCP Tools**: Fully integrated and operational
 - **Live Trading**: Production-ready with real money trading
 - **TWS Integration**: Complete with auto-reconnection and event loop fixes
 - **Risk Management**: Mandatory confirmation workflows
@@ -22,9 +22,9 @@ Production-ready MCP (Model Context Protocol) server that bridges Claude Desktop
 - **Trade Execution**: Place orders with mandatory confirmation workflow
 - **Risk Management**: Position sizing, stop-loss prompts, max loss calculations
 
-### Working MCP Tools (27 Total)
+### Working MCP Tools (37 Total)
 
-#### Market Data (8 tools)
+#### Market Data (10 tools)
 - `trade_get_quote` - Real-time stock/ETF quotes
 - `trade_get_options_chain` - Full options chain with Greeks
 - `trade_get_price_history` - Historical OHLCV data
@@ -32,32 +32,44 @@ Production-ready MCP (Model Context Protocol) server that bridges Claude Desktop
 - `trade_get_open_orders` - Pending orders
 - `trade_get_account_summary` - Account balances and margin
 - `trade_get_news` - News feed (if subscribed)
-- `trade_get_index_quote` - Index quotes (SPX, NDX, VIX)
-
-#### Strategy & Risk (6 tools)
-- `trade_calculate_strategy` - Analyze options strategies
-- `trade_check_margin_risk` - Margin call risk assessment
-- `trade_get_volatility_analysis` - IV rank and volatility metrics
 - `trade_get_watchlist_quotes` - Multiple symbol quotes
 - `trade_get_market_depth` - Level 2 order book
 - `trade_get_depth_analytics` - Price impact analysis
 
-#### Execution (5 tools)
+#### Strategy & Risk (8 tools)
+- `trade_calculate_strategy` - Analyze options strategies
+- `trade_check_margin_risk` - Margin call risk assessment
+- `trade_get_volatility_analysis` - IV rank and volatility metrics
+- `trade_get_index_quote` - Index quotes (SPX, NDX, VIX)
+- `trade_get_index_options` - Index options chains
+- `trade_get_vix_term_structure` - VIX term structure analysis
+- `trade_analyze_opportunity` - Comprehensive trade opportunity analysis
+- `trade_get_session_status` - Trading session state and workflow status
+
+#### Execution (11 tools)
 - `trade_execute` - Execute trades with confirmation
+- `trade_execute_with_verification` - Execute with enhanced verification
 - `trade_close_position` - Close existing positions
 - `trade_set_stop_loss` - Set protective stops
 - `trade_modify_order` - Modify pending orders
 - `trade_cancel_order` - Cancel pending orders
+- `trade_create_conditional_order` - Create conditional/bracket orders
+- `trade_buy_to_close` - Buy to close options positions
+- `trade_direct_close` - Direct position closing without confirmation
+- `trade_emergency_close` - Emergency close all positions
+- `trade_set_price_alert` - Set price alerts
 
-#### Advanced (8 tools)
-- `trade_roll_option_position` - Roll options forward
-- `trade_set_price_alert` - Price alerts
-- `trade_get_index_options` - Index options chains
+#### Extended Hours (3 tools)
+- `trade_place_extended_order` - Place extended hours orders
+- `trade_get_extended_schedule` - Get extended trading schedule
+- `trade_modify_for_extended` - Modify order for extended hours
+
+#### Advanced (5 tools)
+- `trade_roll_option` - Roll options forward
 - `trade_get_crypto_quote` - Crypto quotes (config required)
-- `trade_get_fx_quote` - Forex quotes (config required)
 - `trade_analyze_crypto` - Crypto analysis (config required)
+- `trade_get_fx_quote` - Forex quotes (config required)
 - `trade_analyze_fx_pair` - FX analysis (config required)
-- `trade_calculate_index_futures` - Futures calculations
 
 ## Quick Start
 

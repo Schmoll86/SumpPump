@@ -62,7 +62,7 @@ REQUIRE_CONFIRMATION=true
 
 ```bash
 # Test TWS connection
-python -c "from ib_insync import IB; ib=IB(); ib.connect('127.0.0.1', 7497, 5); print('✅ Connected'); ib.disconnect()"
+python -c "from ib_async import IB; ib=IB(); ib.connect('127.0.0.1', 7497, 5); print('✅ Connected'); ib.disconnect()"
 ```
 
 ## Step 6: Start Trading

@@ -288,6 +288,10 @@ class CryptoTrading:
             else:
                 raise OrderValidationError(f"Unsupported order type: {order_type}")
             
+            # CRITICAL FIX: Add explicit account and time_in_force
+            order.account = "U16348403"
+            order.tif = "GTC"
+            
             # Place order
             logger.info(f"Placing crypto {side} order: {quantity} {symbol} @ {order_type}")
             trade = self.tws.ib.placeOrder(contract, order)

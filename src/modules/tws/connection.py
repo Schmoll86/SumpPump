@@ -273,7 +273,7 @@ class TWSConnection:
         Returns:
             Option contract object
         """
-        return Option(symbol, expiry, strike, right, exchange)
+        return Option(symbol, expiry, strike, right, exchange, currency='USD')
     
     async def get_options_chain(
         self, 
@@ -797,6 +797,10 @@ class TWSConnection:
             else:
                 raise ValueError(f"Unsupported order type: {order_type}")
             
+            # CRITICAL FIX: Add explicit account and time_in_force
+            order.account = "U16348403"
+            order.tif = "GTC"  # Good Till Cancelled
+            
             # Add SMART routing for price improvement on all orders
             from ib_async import TagValue
             order.smartComboRoutingParams = [
@@ -895,6 +899,10 @@ class TWSConnection:
                 limit_price = abs(net_debit_credit)
                 order = LimitOrder('BUY', 1, limit_price)
             
+            # CRITICAL FIX: Add explicit account and time_in_force
+            order.account = "U16348403"
+            order.tif = "GTC"  # Good Till Cancelled
+            
             # Add SMART routing for price improvement (NonGuaranteed for immediate execution)
             from ib_async import TagValue
             order.smartComboRoutingParams = [
@@ -974,6 +982,9 @@ class TWSConnection:
             parent_order = LimitOrder('BUY', quantity, entry_price)
             parent_order.transmit = False  # Don't transmit until bracket is complete
             parent_order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
+            # CRITICAL FIX: Add explicit account and time_in_force
+            parent_order.account = "U16348403"
+            parent_order.tif = "GTC"  # Good Till Cancelled
             
             # Place parent order
             parent_trade = self.ib.placeOrder(contract, parent_order)
@@ -987,6 +998,9 @@ class TWSConnection:
             stop_order.auxPrice = stop_loss_price  # Stop trigger price
             stop_order.parentId = parent_id
             stop_order.transmit = False
+            # CRITICAL FIX: Add explicit account and time_in_force
+            stop_order.account = "U16348403"
+            stop_order.tif = "GTC"  # Good Till Cancelled
             
             # Place stop loss
             stop_trade = self.ib.placeOrder(contract, stop_order)
@@ -996,6 +1010,9 @@ class TWSConnection:
             profit_order.parentId = parent_id
             profit_order.transmit = True  # Transmit all orders now
             profit_order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
+            # CRITICAL FIX: Add explicit account and time_in_force
+            profit_order.account = "U16348403"
+            profit_order.tif = "GTC"  # Good Till Cancelled
             
             # Place profit target (this transmits all three)
             profit_trade = self.ib.placeOrder(contract, profit_order)

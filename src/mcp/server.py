@@ -1648,6 +1648,11 @@ async def set_stop_loss(
         # Import required modules
         from src.modules.tws.connection import tws_connection
         from src.modules.execution.advanced_orders import set_stop_loss as set_stop_loss_impl
+        from src.modules.utils import coerce_numeric
+        
+        # Coerce numeric types to handle schema validation issues
+        stop_price = coerce_numeric(stop_price, 'stop_price') or stop_price
+        trailing_amount = coerce_numeric(trailing_amount, 'trailing_amount') if trailing_amount is not None else None
         
         # Ensure connection
         await tws_connection.ensure_connected()
@@ -1675,9 +1680,9 @@ async def set_stop_loss(
 @mcp.tool(name="trade_modify_order")
 async def modify_order(
     order_id: str,
-    new_limit_price: Optional[float] = None,
-    new_quantity: Optional[int] = None,
-    new_stop_price: Optional[float] = None,
+    new_limit_price: Optional[Union[float, int, str]] = None,  # Accept multiple types for coercion
+    new_quantity: Optional[Union[int, str]] = None,  # Accept multiple types for coercion
+    new_stop_price: Optional[Union[float, int, str]] = None,  # Accept multiple types for coercion
     confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -1724,6 +1729,12 @@ async def modify_order(
     try:
         from src.modules.tws.connection import tws_connection
         from src.modules.execution.advanced_orders import modify_order as modify_order_impl
+        from src.modules.utils import coerce_numeric, coerce_integer
+        
+        # Coerce numeric types to handle schema validation issues
+        new_limit_price = coerce_numeric(new_limit_price, 'new_limit_price') if new_limit_price is not None else None
+        new_quantity = coerce_integer(new_quantity, 'new_quantity') if new_quantity is not None else None
+        new_stop_price = coerce_numeric(new_stop_price, 'new_stop_price') if new_stop_price is not None else None
         
         # Ensure connection
         await tws_connection.ensure_connected()
@@ -2009,7 +2020,7 @@ async def buy_to_close_option(
             from ib_async import Option, MarketOrder, LimitOrder
             
             # Create option contract
-            option = Option(symbol, expiry, strike, right, 'SMART')
+            option = Option(symbol, expiry, strike, right, 'SMART', currency='USD')
             
             # Qualify contract
             qualified = await tws_connection.ib.qualifyContractsAsync(option)

@@ -3,6 +3,9 @@
 ## Project Overview
 SumpPump is an MCP (Model Context Protocol) server that bridges Claude Desktop with Interactive Brokers TWS for conversational options trading. It provides real-time market data access, strategy analysis, and trade execution with mandatory confirmation workflows.
 
+**Current Version**: 2.0 (January 2025)
+**Total MCP Tools**: 37 fully integrated and operational tools
+
 ## Core Architecture Principles
 
 ### 1. Safety First
@@ -108,13 +111,54 @@ except TWSError as e:
 - Handles partial fills
 - Reports execution status
 
-## MCP Tool Specifications
+## MCP Tool Specifications (37 Tools Total)
 
-### Critical Tools
-1. `get_options_chain()` - Full chain with Greeks
-2. `calculate_strategy()` - Strategy analysis
-3. `execute_trade()` - With confirmation
-4. `set_stop_loss()` - Protective orders
+### Market Data Tools (10)
+- `trade_get_quote` - Real-time stock/ETF quotes
+- `trade_get_options_chain` - Full options chain with Greeks
+- `trade_get_price_history` - Historical OHLCV data
+- `trade_get_positions` - Current portfolio positions
+- `trade_get_open_orders` - Pending orders
+- `trade_get_account_summary` - Account balances and margin
+- `trade_get_news` - News feed (if subscribed)
+- `trade_get_watchlist_quotes` - Multiple symbol quotes
+- `trade_get_market_depth` - Level 2 order book
+- `trade_get_depth_analytics` - Price impact analysis
+
+### Strategy & Risk Tools (8)
+- `trade_calculate_strategy` - Analyze options strategies with P&L
+- `trade_check_margin_risk` - Margin call risk assessment
+- `trade_get_volatility_analysis` - IV rank and volatility metrics
+- `trade_get_index_quote` - Index quotes (SPX, NDX, VIX)
+- `trade_get_index_options` - Index options chains
+- `trade_get_vix_term_structure` - VIX term structure analysis
+- `trade_analyze_opportunity` - Comprehensive trade opportunity analysis
+- `trade_get_session_status` - Trading session state and workflow status
+
+### Execution Tools (11)
+- `trade_execute` - Execute trades with confirmation
+- `trade_execute_with_verification` - Execute with enhanced verification
+- `trade_close_position` - Close existing positions
+- `trade_set_stop_loss` - Set protective stops
+- `trade_modify_order` - Modify pending orders
+- `trade_cancel_order` - Cancel pending orders
+- `trade_create_conditional_order` - Create conditional/bracket orders
+- `trade_buy_to_close` - Buy to close options positions
+- `trade_direct_close` - Direct position closing without confirmation
+- `trade_emergency_close` - Emergency close all positions
+- `trade_set_price_alert` - Set price alerts
+
+### Extended Hours Tools (3)
+- `trade_place_extended_order` - Place extended hours orders
+- `trade_get_extended_schedule` - Get extended trading schedule
+- `trade_modify_for_extended` - Modify order for extended hours
+
+### Advanced Tools (5)
+- `trade_roll_option` - Roll options forward
+- `trade_get_crypto_quote` - Crypto quotes (config required)
+- `trade_analyze_crypto` - Crypto analysis (config required)
+- `trade_get_fx_quote` - Forex quotes (config required)
+- `trade_analyze_fx_pair` - FX analysis (config required)
 
 ### Data Flow
 ```
@@ -206,6 +250,15 @@ class SessionState:
 - Prompt for stops after fills
 - Clear cache between symbols
 
+## V2 Architecture Components (January 2025)
+
+### Core System Components
+- **TradingSession State Machine**: Enforces proper workflow (IDLE → ANALYZING → STRATEGY_SELECTED → RISK_VALIDATED → EXECUTING → FILLS_CONFIRMED → STOPS_PLACED → MONITORING → CLOSED)
+- **StrategyManager**: Persistent strategy storage with 5-minute TTL
+- **PreTradeAnalysisPipeline**: Comprehensive pre-trade analysis
+- **RiskValidationFramework**: Multi-layer risk validation
+- **ExecutionSafety Validator**: Prevents accidental executions
+
 ## CRITICAL RECENT FIXES (January 2025 - v2.0)
 
 ### Event Loop Issues - FULLY RESOLVED
@@ -233,10 +286,30 @@ class SessionState:
 - Positions and balances retrieving correctly
 
 ### MCP Integration - FULLY OPERATIONAL
-- All 27 tools working correctly
-- Session state management active
+- All 37 tools working correctly
+- Session state management active with TradingSession state machine
+- Strategy persistence with StrategyManager
 - Comprehensive logging added with [SESSION], [CALC], [EXEC] prefixes
-- Version 2.0 with all fixes applied
+- Version 2.0 with complete V2 architecture
+
+### Order Attributes Fix - RESOLVED (January 2025)
+- Fixed missing order attributes (orderRef, parentId, tif, ocaType) 
+- Added proper type coercion in utils/type_coercion.py
+- Handles both old camelCase and new snake_case attributes
+- Prevents AttributeError in order execution flow
+
+### Type Coercion Module - IMPLEMENTED
+- Created centralized type conversion for all TWS objects
+- Handles Contract, Order, Trade, Position conversions
+- Ensures compatibility between ib_async versions
+- File: src/modules/utils/type_coercion.py
+
+### Production Stability - VERIFIED
+- All critical trading paths tested and operational
+- Greeks data retrieval working with retry mechanism
+- Order execution with proper attribute handling
+- Stop loss recommendations with logging (not print statements)
+- Session state persistence across tool calls
 
 ## Coding Workflow
 

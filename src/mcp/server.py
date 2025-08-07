@@ -75,17 +75,19 @@ class SessionState:
         """Get saved strategy if available."""
         logger.info(f"[SESSION] Getting strategy from session (ID: {id(self)})")
         
-        if self.current_strategy and self.last_calculated:
+        # Check if we have at least the strategy dict and timestamp
+        if self.current_strategy_dict and self.last_calculated:
             # Check if strategy is still fresh (within 5 minutes)
             age = (datetime.now() - self.last_calculated).total_seconds()
             if age < 300:  # 5 minutes
                 logger.info(f"[SESSION] Found valid strategy for {self.current_symbol} (age: {age:.1f}s)")
                 logger.info(f"[SESSION] Strategy dict has legs: {len(self.current_strategy_dict.get('legs', [])) > 0}")
+                # Return the strategy object (may be None) and dict
                 return self.current_strategy, self.current_strategy_dict
             else:
                 logger.warning(f"[SESSION] Strategy expired (age: {age}s)")
         else:
-            logger.warning(f"[SESSION] No strategy in session - strategy: {self.current_strategy is not None}, timestamp: {self.last_calculated is not None}")
+            logger.warning(f"[SESSION] No strategy in session - dict: {self.current_strategy_dict is not None}, timestamp: {self.last_calculated is not None}")
         return None, None
         
     def clear(self):
@@ -438,6 +440,9 @@ async def execute_trade(
         
         logger.info(f"[EXEC] Using saved strategy for {strategy.get('symbol')}")
         logger.info(f"[EXEC] Saved strategy has {len(strategy.get('legs', []))} legs")
+        logger.info(f"[EXEC] Strategy max_loss_raw: {strategy.get('max_loss_raw')}")
+        logger.info(f"[EXEC] Strategy analysis.max_loss: {strategy.get('analysis', {}).get('max_loss')}")
+        logger.info(f"[EXEC] Strategy required_capital: {strategy.get('required_capital')}")
     else:
         logger.info(f"[EXEC] Using provided strategy with {len(strategy.get('legs', []))} legs")
     
@@ -495,17 +500,27 @@ async def execute_trade(
         account_balance = account_info.get('net_liquidation', 0)
         
         # Display pre-execution summary with MAX LOSS
-        max_loss = strategy.get('max_loss', 0)
-        max_loss_pct = (max_loss / account_balance * 100) if account_balance > 0 else 0
+        # Use max_loss_raw if available (from saved strategy), fallback to analysis.max_loss
+        max_loss = strategy.get('max_loss_raw', 0)
+        if max_loss == 0:
+            # Try to get from analysis section
+            max_loss = strategy.get('analysis', {}).get('max_loss', 0)
+        
+        # Get net debit from required_capital or analysis
+        net_debit = strategy.get('required_capital', 0)
+        if net_debit == 0:
+            net_debit = strategy.get('analysis', {}).get('net_debit', 0)
+        
+        max_loss_pct = (abs(max_loss) / account_balance * 100) if account_balance > 0 else 0
         
         pre_execution_display = {
             'strategy': strategy.get('name', 'Unknown'),
             'symbol': strategy.get('symbol', ''),
-            'MAX_LOSS': f"${max_loss:,.2f}",
+            'MAX_LOSS': f"${abs(max_loss):,.2f}",
             'MAX_LOSS_PCT': f"{max_loss_pct:.1f}% of account",
-            'max_profit': strategy.get('max_profit', 'Unknown'),
-            'net_debit': f"${abs(net_debit_credit):,.2f}",
-            'breakeven': strategy.get('breakeven', []),
+            'max_profit': strategy.get('max_profit_raw', strategy.get('analysis', {}).get('max_profit', 'Unknown')),
+            'net_debit': f"${abs(net_debit):,.2f}",
+            'breakeven': strategy.get('analysis', {}).get('breakeven_points', strategy.get('breakeven', [])),
             'WARNING': "This is LIVE TRADING with real money"
         }
         
@@ -538,16 +553,25 @@ async def execute_trade(
                         'required_flow': '1. get_options_chain() → 2. calculate_strategy() → 3. execute_trade()'
                     }
             
+            # Use the raw values if available, otherwise get from analysis section
+            max_profit_val = strategy.get('max_profit_raw')
+            if max_profit_val is None:
+                analysis_profit = strategy.get('analysis', {}).get('max_profit', 'Unlimited')
+                max_profit_val = float('inf') if analysis_profit == 'Unlimited' else analysis_profit
+            
+            max_loss_val = strategy.get('max_loss_raw', strategy.get('analysis', {}).get('max_loss', 0.0))
+            breakeven_val = strategy.get('analysis', {}).get('breakeven_points', strategy.get('breakeven', []))
+            
             strategy_obj = StrategyModel(
                 name=strategy.get('name', f"{strategy_type.value} Strategy"),
                 type=strategy_type,
                 legs=legs,
-                max_profit=strategy.get('max_profit', float('inf')),
-                max_loss=strategy.get('max_loss', 0.0),
-                breakeven=strategy.get('breakeven', []),
+                max_profit=max_profit_val,
+                max_loss=max_loss_val,
+                breakeven=breakeven_val,
                 current_value=strategy.get('current_value', 0.0),
                 probability_profit=strategy.get('probability_profit'),
-                required_capital=strategy.get('required_capital', 0.0)
+                required_capital=strategy.get('required_capital', abs(max_loss_val))
             )
         except Exception as e:
             logger.error(f"Failed to construct Strategy object: {e}")

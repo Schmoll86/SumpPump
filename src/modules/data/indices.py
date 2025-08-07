@@ -51,7 +51,7 @@ class IndexData:
             "symbol": self.symbol,
             "exchange": self.exchange,
             "last_price": self.last_price,
-            "change": change,
+            "change": self.change,
             "change_pct": self.change_pct,
             "volume": self.volume,
             "high": self.high,

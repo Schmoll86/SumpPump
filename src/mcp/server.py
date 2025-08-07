@@ -582,37 +582,48 @@ async def get_news(
             )
             
             # Process news articles
-            for news_item in historical_news[:num_articles]:
-                # Get article details if available
-                article_detail = None
-                try:
-                    if hasattr(news_item, 'articleId'):
-                        article_detail = await tws_connection.ib.reqNewsArticleAsync(
-                            providerCode=news_item.providerCode,
-                            articleId=news_item.articleId
-                        )
-                except Exception as e:
-                    logger.warning(f"Could not fetch article detail: {e}")
-                
-                # Build article data
-                article_data = {
-                    'title': getattr(news_item, 'headline', 'No title available'),
-                    'provider': getattr(news_item, 'providerCode', 'Unknown'),
-                    'date': getattr(news_item, 'time', ''),
-                    'summary': getattr(news_item, 'summary', ''),
-                    'article_id': getattr(news_item, 'articleId', ''),
+            if historical_news:
+                for news_item in historical_news[:num_articles]:
+                    # Get article details if available
+                    article_detail = None
+                    try:
+                        if hasattr(news_item, 'articleId'):
+                            article_detail = await tws_connection.ib.reqNewsArticleAsync(
+                                providerCode=news_item.providerCode,
+                                articleId=news_item.articleId
+                            )
+                    except Exception as e:
+                        logger.warning(f"Could not fetch article detail: {e}")
+                    
+                    # Build article data
+                    article_data = {
+                        'title': getattr(news_item, 'headline', 'No title available'),
+                        'provider': getattr(news_item, 'providerCode', 'Unknown'),
+                        'date': getattr(news_item, 'time', ''),
+                        'summary': getattr(news_item, 'summary', ''),
+                        'article_id': getattr(news_item, 'articleId', ''),
+                    }
+                    
+                    # Add full article text if available
+                    if article_detail and hasattr(article_detail, 'articleText'):
+                        # Truncate long articles for readability
+                        full_text = article_detail.articleText
+                        if len(full_text) > 1000:
+                            article_data['summary'] = full_text[:1000] + '...'
+                        else:
+                            article_data['summary'] = full_text
+                    
+                    news_articles.append(article_data)
+            else:
+                # No news data available
+                return {
+                    'status': 'success',
+                    'symbol': symbol,
+                    'articles': [],
+                    'count': 0,
+                    'message': 'No news articles found for this symbol or news feed not available',
+                    'timestamp': datetime.now().isoformat()
                 }
-                
-                # Add full article text if available
-                if article_detail and hasattr(article_detail, 'articleText'):
-                    # Truncate long articles for readability
-                    full_text = article_detail.articleText
-                    if len(full_text) > 1000:
-                        article_data['summary'] = full_text[:1000] + '...'
-                    else:
-                        article_data['summary'] = full_text
-                
-                news_articles.append(article_data)
         
         except Exception as news_error:
             # Handle specific news permission errors
@@ -1623,60 +1634,15 @@ async def get_account_summary() -> Dict[str, Any]:
         await ensure_tws_connected()
         from src.modules.tws.connection import tws_connection
         
-        # Get account values and summary
-        account_values = tws_connection.ib.accountValues()
-        account_summary = tws_connection.ib.accountSummary()
+        # Use the async account info method
+        account_info = await tws_connection.get_account_info()
         
-        # Parse into dictionaries
-        values_dict = {av.tag: {'value': av.value, 'currency': av.currency, 'account': av.account} for av in account_values}
-        summary_dict = {item.tag: {'value': item.value, 'currency': item.currency} for item in account_summary}
-        
-        # Extract key metrics
-        account_info = {
+        # Return the account info with success status
+        return {
             'status': 'success',
-            'account': values_dict.get('AccountCode', {}).get('value', 'Unknown'),
-            
-            # Core balances
-            'net_liquidation': float(summary_dict.get('NetLiquidation', {}).get('value', 0)),
-            'total_cash': float(summary_dict.get('TotalCashValue', {}).get('value', 0)),
-            'settled_cash': float(values_dict.get('SettledCash', {}).get('value', 0)),
-            
-            # Buying power
-            'buying_power': float(summary_dict.get('BuyingPower', {}).get('value', 0)),
-            'excess_liquidity': float(summary_dict.get('ExcessLiquidity', {}).get('value', 0)),
-            
-            # Margin information
-            'maintenance_margin': float(summary_dict.get('MaintMarginReq', {}).get('value', 0)),
-            'initial_margin': float(summary_dict.get('InitMarginReq', {}).get('value', 0)),
-            'margin_cushion': float(summary_dict.get('Cushion', {}).get('value', 0)),
-            'sma': float(values_dict.get('SMA', {}).get('value', 0)),
-            
-            # P&L
-            'daily_pnl': float(summary_dict.get('DailyPnL', {}).get('value', 0)),
-            'unrealized_pnl': float(summary_dict.get('UnrealizedPnL', {}).get('value', 0)),
-            'realized_pnl': float(summary_dict.get('RealizedPnL', {}).get('value', 0)),
-            
+            **account_info,
             'timestamp': datetime.now().isoformat()
         }
-        
-        # Calculate margin usage percentage
-        if account_info['net_liquidation'] > 0:
-            account_info['margin_usage_percent'] = (account_info['maintenance_margin'] / account_info['net_liquidation']) * 100
-        else:
-            account_info['margin_usage_percent'] = 0
-        
-        # Add margin warnings
-        margin_warnings = []
-        if account_info['margin_cushion'] < 0.05:
-            margin_warnings.append("WARNING: Low margin cushion - approaching margin call territory")
-        if account_info['margin_usage_percent'] > 80:
-            margin_warnings.append(f"WARNING: High margin usage ({account_info['margin_usage_percent']:.1f}%)")
-        if account_info['excess_liquidity'] < 1000:
-            margin_warnings.append("WARNING: Low excess liquidity")
-        
-        account_info['warnings'] = margin_warnings
-        
-        return account_info
         
     except Exception as e:
         logger.error(f"Failed to fetch account info: {e}")

@@ -9,7 +9,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum
 
-from ib_async import Stock, Contract, MarketDepthData
+from ib_async import Stock, Contract, MktDepthData
 from loguru import logger
 
 from src.core import (

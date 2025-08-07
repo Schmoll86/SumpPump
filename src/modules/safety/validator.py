@@ -30,7 +30,9 @@ class ExecutionSafety:
         'trade_modify_order',
         'trade_set_stop_loss',
         'trade_set_price_alert',
-        'trade_roll_option'
+        'trade_roll_option',
+        'trade_place_extended_order',  # Extended hours trading
+        'trade_modify_for_extended'    # Modify for extended hours
     }
     
     # Parameters that trigger immediate execution (dangerous if no confirmation)

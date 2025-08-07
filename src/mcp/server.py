@@ -12,7 +12,7 @@ nest_asyncio.apply()
 import asyncio
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 from datetime import datetime
 
 # Add src to path
@@ -149,6 +149,21 @@ class TradeExecutionRequest(BaseModel):
     strategy: Dict[str, Any] = Field(..., description="Strategy details")
     confirm_token: str = Field(..., description="Confirmation token from user")
 
+# Helper functions for data extraction
+def _get_trade_commission(trade) -> float:
+    """Extract commission from trade fills."""
+    commission = 0.0
+    try:
+        if hasattr(trade, 'fills') and callable(trade.fills):
+            fills = trade.fills()
+            if fills:
+                for fill in fills:
+                    if hasattr(fill, 'commission'):
+                        commission += float(fill.commission)
+    except Exception as e:
+        logger.debug(f"Could not extract commission: {e}")
+    return commission
+
 # MCP Tool: Get Options Chain
 @mcp.tool(name="trade_get_options_chain")
 async def get_options_chain(
@@ -233,9 +248,9 @@ async def get_options_chain(
 async def calculate_strategy(
     strategy_type: str,
     symbol: str,
-    strikes: List[float],
+    strikes: List[Union[float, int, str]],  # Accept multiple types for each strike
     expiry: str,
-    quantity: int = 1
+    quantity: Union[int, str] = 1  # Accept both int and string for coercion
 ) -> Dict[str, Any]:
     """
     Calculate P&L profile for a Level 2 options strategy.
@@ -274,6 +289,11 @@ async def calculate_strategy(
             create_bull_call_spread, create_bear_put_spread
         )
         from src.models import OptionLeg, OrderAction, OptionRight
+        from src.modules.utils import coerce_numeric, coerce_integer
+        
+        # Coerce parameters to proper types
+        quantity = coerce_integer(quantity, 'quantity') or quantity
+        strikes = [coerce_numeric(s, f'strike[{i}]') or s for i, s in enumerate(strikes)]
         
         # Check if strategy is Level 2 compliant
         level2_strategies = [
@@ -1395,7 +1415,7 @@ async def get_open_orders() -> Dict[str, Any]:
                 'order': order_details,
                 'time_in_force': order.tif,
                 'submit_time': None,  # OrderStatus doesn't have lastFillTime
-                'commission': status.commission if status.commission else 0,
+                'commission': _get_trade_commission(trade),
                 'parent_id': order.parentId if order.parentId else None
             }
             
@@ -1440,9 +1460,9 @@ async def get_open_orders() -> Dict[str, Any]:
 async def close_position(
     symbol: str,
     position_type: str,  # 'call', 'put', 'spread', 'stock'
-    quantity: int,
+    quantity: Union[int, str],  # Accept both int and string for coercion
     order_type: str = 'MKT',  # 'MKT' or 'LMT'
-    limit_price: Optional[float] = None,
+    limit_price: Optional[Union[float, int, str]] = None,  # Accept multiple types
     position_id: Optional[str] = None,  # Optional specific position ID
     confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -1577,9 +1597,9 @@ async def close_position(
 @mcp.tool(name="trade_set_stop_loss")
 async def set_stop_loss(
     position_id: str,
-    stop_price: float,
+    stop_price: Union[float, int, str],  # Accept multiple types for coercion
     stop_type: str = 'fixed',  # 'fixed' or 'trailing'
-    trailing_amount: Optional[float] = None,  # For trailing stops (dollars or percent)
+    trailing_amount: Optional[Union[float, int, str]] = None,  # For trailing stops (dollars or percent)
     trailing_type: Optional[str] = 'amount',  # 'amount' or 'percent'
     confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -1772,12 +1792,12 @@ async def create_conditional_order(
     symbol: str,
     contract_type: str,  # 'STOCK', 'OPTION'
     action: str,  # 'BUY', 'SELL', 'BUY_TO_CLOSE', 'SELL_TO_CLOSE'
-    quantity: int,
+    quantity: Union[int, str],  # Accept both int and string for coercion
     order_type: str,  # 'MKT', 'LMT', 'STP', 'STP_LMT'
     conditions: List[Dict[str, Any]],  # List of condition specifications
-    limit_price: Optional[float] = None,
-    stop_price: Optional[float] = None,
-    strike: Optional[float] = None,
+    limit_price: Optional[Union[float, int, str]] = None,  # Accept multiple types
+    stop_price: Optional[Union[float, int, str]] = None,  # Accept multiple types
+    strike: Optional[Union[float, int, str]] = None,  # Accept multiple types
     expiry: Optional[str] = None,
     right: Optional[str] = None,
     trigger_method: str = 'Last',
@@ -1901,13 +1921,13 @@ async def create_conditional_order(
 @mcp.tool(name="trade_buy_to_close")
 async def buy_to_close_option(
     symbol: str,
-    strike: float,
+    strike: Union[float, int, str],  # Accept multiple types for coercion
     expiry: str,  # YYYYMMDD format
     right: str,  # 'C' for call, 'P' for put
-    quantity: int,
+    quantity: Union[int, str],  # Accept both int and string for coercion
     order_type: str = 'MKT',
-    limit_price: Optional[float] = None,
-    trigger_price: Optional[float] = None,
+    limit_price: Optional[Union[float, int, str]] = None,  # Accept multiple types
+    trigger_price: Optional[Union[float, int, str]] = None,  # Accept multiple types
     trigger_condition: str = 'immediate',  # 'immediate', 'above', 'below'
     confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -2066,11 +2086,11 @@ async def buy_to_close_option(
 async def direct_close(
     symbol: str,
     position_type: str,  # 'call', 'put', 'stock'
-    strike: Optional[float] = None,
+    strike: Optional[Union[float, int, str]] = None,  # Accept multiple types
     right: Optional[str] = None,  # 'C' or 'P'
-    quantity: Optional[int] = None,
+    quantity: Optional[Union[int, str]] = None,  # Accept multiple types
     order_type: str = 'MKT',
-    limit_price: Optional[float] = None,
+    limit_price: Optional[Union[float, int, str]] = None,  # Accept multiple types
     confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -2186,7 +2206,7 @@ async def emergency_close_all(
 @mcp.tool(name="trade_set_price_alert")
 async def set_price_alert(
     symbol: str,
-    trigger_price: float,
+    trigger_price: Union[float, int, str],  # Accept multiple types for coercion
     condition: str = 'above',  # 'above' or 'below'
     action: str = 'notify',  # 'notify', 'close_position', 'place_order'
     action_params: Optional[Dict[str, Any]] = None,
@@ -2852,12 +2872,28 @@ async def analyze_opportunity(
             from src.modules.tws.connection import tws_connection
             
             # Define MCP tools for pipeline
+            # Create wrapper functions for MCP tools to ensure they're callable
+            async def _get_news_wrapper(symbol, **kwargs):
+                return await get_news(symbol, **kwargs)
+            
+            async def _get_volatility_wrapper(symbol, **kwargs):
+                return await get_volatility_analysis(symbol, **kwargs)
+            
+            async def _get_options_wrapper(symbol, **kwargs):
+                return await get_options_chain(symbol, **kwargs)
+            
+            async def _calculate_strategy_wrapper(**kwargs):
+                return await calculate_strategy(**kwargs)
+            
+            async def _check_margin_wrapper(**kwargs):
+                return await check_margin_risk(**kwargs)
+            
             mcp_tools = {
-                'trade_get_news': get_news,
-                'trade_get_volatility_analysis': get_volatility_analysis,
-                'trade_get_options_chain': get_options_chain,
-                'trade_calculate_strategy': calculate_strategy,
-                'trade_check_margin_risk': check_margin_risk
+                'trade_get_news': _get_news_wrapper,
+                'trade_get_volatility_analysis': _get_volatility_wrapper,
+                'trade_get_options_chain': _get_options_wrapper,
+                'trade_calculate_strategy': _calculate_strategy_wrapper,
+                'trade_check_margin_risk': _check_margin_wrapper
             }
             
             # Run analysis pipeline
@@ -2884,9 +2920,13 @@ async def analyze_opportunity(
             'quantity': 1
         }
         
+        # Create wrapper for calculate_strategy
+        async def _calc_wrapper(**kwargs):
+            return await calculate_strategy(**kwargs)
+        
         is_valid, strategy_result = await pipeline.validate_strategy(
             strategy_config,
-            {'trade_calculate_strategy': calculate_strategy}
+            {'trade_calculate_strategy': _calc_wrapper}
         )
         
         if not is_valid:
@@ -2901,10 +2941,13 @@ async def analyze_opportunity(
         account_info = await tws_connection.get_account_summary()
         
         # Run risk validation
+        async def _risk_wrapper(**kwargs):
+            return await check_margin_risk(**kwargs)
+        
         risk_valid, risk_result = await pipeline.validate_risk(
             strategy_result,
             account_info,
-            {'trade_check_margin_risk': check_margin_risk}
+            {'trade_check_margin_risk': _risk_wrapper}
         )
         
         # Create strategy in manager
@@ -3107,6 +3150,195 @@ async def get_session_status(symbol: Optional[str] = None) -> Dict[str, Any]:
         return {
             'error': str(e),
             'status': 'failed'
+        }
+
+
+# ============================================================================
+# EXTENDED HOURS TRADING TOOLS
+# ============================================================================
+
+@mcp.tool(name="trade_place_extended_order")
+async def place_extended_order(
+    symbol: str,
+    action: str,  # BUY or SELL
+    quantity: Union[int, str],  # Accept both int and string for coercion
+    order_type: str = "LMT",
+    limit_price: Optional[Union[float, int, str]] = None,  # Accept multiple types
+    stop_price: Optional[Union[float, int, str]] = None,  # Accept multiple types
+    time_in_force: str = "DAY",
+    outside_rth: bool = True,
+    good_till_date: Optional[str] = None,
+    confirm_token: str = None
+) -> Dict[str, Any]:
+    """
+    [TRADING] Place order with extended hours support (pre-market, after-hours, overnight).
+    Follows IBKR best practices for extended trading.
+    
+    Args:
+        symbol: Stock symbol
+        action: BUY or SELL
+        quantity: Number of shares
+        order_type: MKT, LMT, STP, STP_LMT (LMT recommended for extended hours)
+        limit_price: Required for LMT orders
+        stop_price: Required for STP orders
+        time_in_force: DAY, GTC, IOC, GTD, OPG
+        outside_rth: Enable trading outside regular hours
+        good_till_date: For GTD orders (YYYYMMDD HH:MM:SS)
+        confirm_token: Must be 'USER_CONFIRMED'
+        
+    Returns:
+        Order placement result with session info
+    """
+    logger.info(f"[EXTENDED] Placing extended hours order for {symbol}")
+    
+    # Validate confirmation
+    params = {
+        'symbol': symbol,
+        'action': action,
+        'quantity': quantity,
+        'order_type': order_type,
+        'outside_rth': outside_rth,
+        'confirm_token': confirm_token
+    }
+    
+    is_valid, error_message = ExecutionSafety.validate_execution_request(
+        'trade_place_extended_order',
+        params
+    )
+    
+    if not is_valid:
+        return {
+            'status': 'blocked',
+            'error': 'SAFETY_CHECK_FAILED',
+            'message': error_message,
+            'action_required': "Add confirm_token='USER_CONFIRMED'"
+        }
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.execution.extended_hours import (
+            create_extended_hours_order,
+            ExtendedHoursConfig
+        )
+        
+        # Ensure connected
+        await ensure_tws_connected()
+        
+        # Configure for extended hours
+        config = ExtendedHoursConfig(
+            allow_pre_market=True,
+            allow_after_hours=True,
+            allow_overnight=False,  # Requires special permission
+            limit_order_only=True,  # Safer for extended hours
+            max_order_size_extended=500
+        )
+        
+        # Create and place order
+        result = await create_extended_hours_order(
+            tws_connection=tws_connection,
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            order_type=order_type,
+            limit_price=limit_price,
+            stop_price=stop_price,
+            time_in_force=time_in_force,
+            outside_rth=outside_rth,
+            good_till_date=good_till_date,
+            extended_hours_config=config
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"[EXTENDED] Order placement failed: {e}")
+        return {
+            'status': 'failed',
+            'error': str(e),
+            'symbol': symbol
+        }
+
+
+@mcp.tool(name="trade_get_extended_schedule")
+async def get_extended_schedule() -> Dict[str, Any]:
+    """
+    [TRADING] Get current extended hours trading schedule and session status.
+    Shows pre-market, regular, after-hours, and overnight sessions.
+    
+    Returns:
+        Trading schedule with current session info
+    """
+    try:
+        from src.modules.execution.extended_hours import get_extended_hours_schedule
+        
+        schedule = get_extended_hours_schedule()
+        
+        # Add TWS connection status
+        from src.modules.tws.connection import tws_connection
+        schedule['tws_connected'] = tws_connection.connected
+        
+        return schedule
+        
+    except Exception as e:
+        logger.error(f"Failed to get schedule: {e}")
+        return {
+            'status': 'failed',
+            'error': str(e)
+        }
+
+
+@mcp.tool(name="trade_modify_for_extended")
+async def modify_for_extended(
+    order_id: int,
+    enable_extended: bool = True,
+    new_time_in_force: Optional[str] = None,
+    confirm_token: str = None
+) -> Dict[str, Any]:
+    """
+    [TRADING] Modify existing order to enable/disable extended hours trading.
+    
+    Args:
+        order_id: Order ID to modify
+        enable_extended: Enable or disable extended hours
+        new_time_in_force: Optional new TIF (GTC, GTD, etc.)
+        confirm_token: Must be 'USER_CONFIRMED'
+        
+    Returns:
+        Modification result
+    """
+    logger.info(f"[EXTENDED] Modifying order {order_id} for extended hours")
+    
+    # Validate confirmation
+    if confirm_token != 'USER_CONFIRMED':
+        return {
+            'status': 'blocked',
+            'error': 'CONFIRMATION_REQUIRED',
+            'message': "Order modification requires confirm_token='USER_CONFIRMED'"
+        }
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.execution.extended_hours import modify_for_extended_hours
+        
+        # Ensure connected
+        await ensure_tws_connected()
+        
+        # Modify order
+        result = await modify_for_extended_hours(
+            tws_connection=tws_connection,
+            order_id=order_id,
+            enable_extended=enable_extended,
+            new_tif=new_time_in_force
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"[EXTENDED] Order modification failed: {e}")
+        return {
+            'status': 'failed',
+            'error': str(e),
+            'order_id': order_id
         }
 
 

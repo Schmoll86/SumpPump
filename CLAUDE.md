@@ -237,3 +237,8 @@ class SessionState:
 - Session state management active
 - Comprehensive logging added with [SESSION], [CALC], [EXEC] prefixes
 - Version 2.0 with all fixes applied
+
+## Coding Workflow
+
+### Code Review Guidelines
+- Use `data_flow_architect` and `python_reviewer` when making changes to more than 2 lines of code

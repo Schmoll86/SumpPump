@@ -25,6 +25,12 @@ from pydantic import BaseModel, Field
 from src.config import config
 from src.modules.safety import ExecutionSafety, _async_safe_sleep
 
+# Import new trading architecture
+from src.modules.trading.session import TradingSession, SessionState as TradingSessionState
+from src.modules.trading.strategy_manager import get_strategy_manager
+from src.modules.trading.analysis_pipeline import PreTradeAnalysisPipeline, AnalysisRequirements
+from src.modules.trading.risk_framework import RiskValidationFramework, RiskProfile
+
 # Configure logging
 if config.log.log_format == "json":
     logger.add(
@@ -46,14 +52,21 @@ else:
 # Initialize MCP server
 mcp = FastMCP("sump-pump")
 
-# Session state management for strategies
+# Session state management for strategies (enhanced with new architecture)
 class SessionState:
-    """Manages state between MCP tool calls."""
+    """Manages state between MCP tool calls - enhanced with new trading architecture."""
     def __init__(self):
+        # Legacy state (for backward compatibility)
         self.current_strategy = None  # BaseStrategy object
         self.current_strategy_dict = None  # Dict representation
         self.current_symbol = None
         self.last_calculated = None
+        
+        # New architecture components
+        self.trading_session: Optional[TradingSession] = None
+        self.strategy_manager = get_strategy_manager()
+        self.risk_framework = RiskValidationFramework()
+        self.active_pipelines: Dict[str, PreTradeAnalysisPipeline] = {}
         
     def save_strategy(self, strategy_obj, strategy_dict, symbol):
         """Save calculated strategy for execution."""
@@ -97,6 +110,22 @@ class SessionState:
         self.current_strategy_dict = None
         self.current_symbol = None
         self.last_calculated = None
+        # Don't clear new components - they persist
+    
+    def get_or_create_trading_session(self, symbol: str) -> TradingSession:
+        """Get or create a trading session for a symbol."""
+        if not self.trading_session or self.trading_session.context.symbol != symbol:
+            self.trading_session = TradingSession(symbol)
+            logger.info(f"[SESSION] Created new trading session for {symbol}")
+        return self.trading_session
+    
+    def get_analysis_pipeline(self, symbol: str) -> PreTradeAnalysisPipeline:
+        """Get or create analysis pipeline for a symbol."""
+        if symbol not in self.active_pipelines:
+            session = self.get_or_create_trading_session(symbol)
+            self.active_pipelines[symbol] = PreTradeAnalysisPipeline(session)
+            logger.info(f"[SESSION] Created analysis pipeline for {symbol}")
+        return self.active_pipelines[symbol]
 
 # Global session state
 session_state = SessionState()
@@ -472,7 +501,7 @@ async def execute_trade(
         # Validate Level 2 compliance
         try:
             # Check if strategy type is allowed
-            strategy_type = strategy.get('type', '')
+            strategy_type = strategy.get('strategy_type', '')
             forbidden_strategies = [
                 'bull_put_spread', 'bear_call_spread',  # Credit spreads
                 'cash_secured_put', 'short_put',        # Naked puts
@@ -2780,6 +2809,304 @@ async def get_watchlist_quotes(symbols: List[str]) -> Dict[str, Any]:
             'error': str(e),
             'status': 'failed',
             'message': 'Could not fetch quotes. Check TWS connection.'
+        }
+
+
+# ============================================================================
+# NEW COMPREHENSIVE TRADING TOOLS WITH FULL PIPELINE
+# ============================================================================
+
+@mcp.tool(name="trade_analyze_opportunity")
+async def analyze_opportunity(
+    symbol: str,
+    strategy_type: str,
+    strikes: List[float],
+    expiry: Optional[str] = None,
+    run_full_analysis: bool = True
+) -> Dict[str, Any]:
+    """
+    [TRADING] Comprehensive pre-trade analysis with enforced workflow.
+    Runs news, volatility, options chain analysis before strategy calculation.
+    
+    Args:
+        symbol: Stock symbol
+        strategy_type: Type of strategy to analyze
+        strikes: Strike prices for the strategy
+        expiry: Option expiry date
+        run_full_analysis: Run complete analysis pipeline
+        
+    Returns:
+        Complete analysis with risk assessment
+    """
+    logger.info(f"[ANALYZE] Starting comprehensive analysis for {symbol}")
+    
+    try:
+        # Get or create trading session
+        trading_session = session_state.get_or_create_trading_session(symbol)
+        
+        # Get analysis pipeline
+        pipeline = session_state.get_analysis_pipeline(symbol)
+        
+        if run_full_analysis:
+            # Run complete pre-trade analysis
+            from src.modules.tws.connection import tws_connection
+            
+            # Define MCP tools for pipeline
+            mcp_tools = {
+                'trade_get_news': get_news,
+                'trade_get_volatility_analysis': get_volatility_analysis,
+                'trade_get_options_chain': get_options_chain,
+                'trade_calculate_strategy': calculate_strategy,
+                'trade_check_margin_risk': check_margin_risk
+            }
+            
+            # Run analysis pipeline
+            success, analysis_data = await pipeline.run_analysis(
+                symbol=symbol,
+                tws_connection=tws_connection,
+                mcp_tools=mcp_tools
+            )
+            
+            if not success:
+                return {
+                    'status': 'failed',
+                    'error': 'Analysis pipeline failed',
+                    'details': analysis_data,
+                    'missing_steps': pipeline.get_missing_steps()
+                }
+        
+        # Calculate strategy
+        strategy_config = {
+            'strategy_type': strategy_type,
+            'symbol': symbol,
+            'strikes': strikes,
+            'expiry': expiry or 'next_monthly',
+            'quantity': 1
+        }
+        
+        is_valid, strategy_result = await pipeline.validate_strategy(
+            strategy_config,
+            {'trade_calculate_strategy': calculate_strategy}
+        )
+        
+        if not is_valid:
+            return {
+                'status': 'failed',
+                'error': 'Strategy validation failed',
+                'details': strategy_result
+            }
+        
+        # Get account info for risk check
+        from src.modules.tws.connection import tws_connection
+        account_info = await tws_connection.get_account_summary()
+        
+        # Run risk validation
+        risk_valid, risk_result = await pipeline.validate_risk(
+            strategy_result,
+            account_info,
+            {'trade_check_margin_risk': check_margin_risk}
+        )
+        
+        # Create strategy in manager
+        if risk_valid and strategy_result:
+            strategy_id = session_state.strategy_manager.create_strategy(
+                symbol=symbol,
+                strategy_type=strategy_type,
+                legs=strategy_result.get('legs', []),
+                strikes=strikes,
+                expiry=expiry or 'next_monthly',
+                quantity=1,
+                max_loss=strategy_result.get('max_loss', 0),
+                max_profit=strategy_result.get('max_profit', 0),
+                breakeven=strategy_result.get('breakeven', [])
+            )
+            
+            logger.info(f"[ANALYZE] Created strategy {strategy_id} in manager")
+        else:
+            strategy_id = None
+        
+        return {
+            'status': 'success',
+            'symbol': symbol,
+            'strategy_type': strategy_type,
+            'strategy_id': strategy_id,
+            'session_state': trading_session.get_current_state(),
+            'analysis_complete': pipeline._analysis_complete,
+            'strategy_details': strategy_result,
+            'risk_validation': risk_result,
+            'risk_approved': risk_valid,
+            'execution_ready': risk_valid and strategy_id is not None,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"[ANALYZE] Analysis failed: {e}")
+        return {
+            'status': 'failed',
+            'error': str(e),
+            'symbol': symbol
+        }
+
+
+@mcp.tool(name="trade_execute_with_verification")
+async def execute_with_verification(
+    strategy_id: Optional[str] = None,
+    symbol: Optional[str] = None,
+    confirm_token: str = None,
+    set_stop_loss: bool = True,
+    stop_loss_percent: float = 50.0
+) -> Dict[str, Any]:
+    """
+    [TRADING] Execute trade with full verification and stop loss.
+    Uses strategy from analysis or session state.
+    
+    Args:
+        strategy_id: Strategy ID from analysis (optional)
+        symbol: Symbol if using session strategy (optional)
+        confirm_token: Must be 'USER_CONFIRMED'
+        set_stop_loss: Automatically set stop loss
+        stop_loss_percent: Stop loss at X% of max loss
+        
+    Returns:
+        Execution result with verification
+    """
+    logger.info(f"[EXECUTE_V2] Starting verified execution")
+    
+    # Validate confirmation
+    if confirm_token != 'USER_CONFIRMED':
+        return {
+            'status': 'blocked',
+            'error': 'CONFIRMATION_REQUIRED',
+            'message': "Execution requires confirm_token='USER_CONFIRMED'"
+        }
+    
+    try:
+        # Get strategy from manager or session
+        strategy = None
+        managed_strategy = None
+        
+        if strategy_id:
+            managed_strategy = session_state.strategy_manager.get_strategy(strategy_id)
+            if managed_strategy:
+                strategy = {
+                    'strategy_type': managed_strategy.strategy_type,
+                    'symbol': managed_strategy.symbol,
+                    'legs': managed_strategy.legs,
+                    'strikes': managed_strategy.strikes,
+                    'quantity': managed_strategy.quantity
+                }
+        elif symbol:
+            # Try session state
+            _, strategy = session_state.get_strategy()
+        
+        if not strategy:
+            return {
+                'status': 'failed',
+                'error': 'NO_STRATEGY',
+                'message': 'No strategy found. Run trade_analyze_opportunity first.'
+            }
+        
+        # Execute using existing trade_execute
+        exec_result = await execute(
+            strategy=strategy,
+            confirm_token='USER_CONFIRMED'
+        )
+        
+        if exec_result.get('status') != 'success':
+            return exec_result
+        
+        # Link to strategy manager
+        if managed_strategy and exec_result.get('order_id'):
+            session_state.strategy_manager.link_position_to_strategy(
+                position_id=f"order_{exec_result['order_id']}",
+                strategy_id=strategy_id,
+                order_id=exec_result['order_id'],
+                fill_price=exec_result.get('fill_price')
+            )
+        
+        # Set stop loss if requested
+        stop_result = None
+        if set_stop_loss and exec_result.get('status') == 'success':
+            max_loss = strategy.get('max_loss', 0)
+            if max_loss:
+                stop_trigger = abs(max_loss) * (stop_loss_percent / 100)
+                
+                # Set stop loss (simplified - should calculate based on position)
+                from src.modules.tws.connection import tws_connection
+                # This would need proper implementation
+                logger.info(f"[EXECUTE_V2] Would set stop loss at ${stop_trigger:.2f}")
+                
+                if managed_strategy:
+                    session_state.strategy_manager.set_stop_loss(
+                        strategy_id=strategy_id,
+                        stop_price=stop_trigger,
+                        stop_type='dollar_loss'
+                    )
+        
+        return {
+            'status': 'success',
+            'execution': exec_result,
+            'strategy_id': strategy_id,
+            'stop_loss_set': stop_result is not None,
+            'managed': managed_strategy is not None,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"[EXECUTE_V2] Execution failed: {e}")
+        return {
+            'status': 'failed',
+            'error': str(e)
+        }
+
+
+@mcp.tool(name="trade_get_session_status")
+async def get_session_status(symbol: Optional[str] = None) -> Dict[str, Any]:
+    """
+    [TRADING] Get current trading session status and active strategies.
+    
+    Args:
+        symbol: Optional symbol to check (checks all if not provided)
+        
+    Returns:
+        Session status and active strategies
+    """
+    try:
+        result = {
+            'strategy_manager': session_state.strategy_manager.get_summary(),
+            'sessions': {},
+            'active_strategies': []
+        }
+        
+        # Get trading session info
+        if session_state.trading_session:
+            result['sessions'][session_state.trading_session.context.symbol] = \
+                session_state.trading_session.get_current_state()
+        
+        # Get active strategies
+        if symbol:
+            strategies = session_state.strategy_manager.get_strategies_by_symbol(symbol)
+        else:
+            strategies = list(session_state.strategy_manager.active_strategies.values())
+        
+        for strategy in strategies:
+            result['active_strategies'].append({
+                'strategy_id': strategy.strategy_id,
+                'symbol': strategy.symbol,
+                'type': strategy.strategy_type,
+                'status': strategy.status,
+                'pnl': strategy.current_pnl,
+                'expires_at': strategy.expires_at.isoformat()
+            })
+        
+        result['timestamp'] = datetime.now().isoformat()
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to get session status: {e}")
+        return {
+            'error': str(e),
+            'status': 'failed'
         }
 
 

@@ -1426,7 +1426,7 @@ async def close_position(
         position_type: Type of position ('call', 'put', 'spread', 'stock')
         quantity: Number of contracts/shares to close
         order_type: Market or limit order
-        limit_price: Price for limit orders
+        limit_price: Price for limit orders (accepts float, int, or string)
         position_id: Optional specific position ID to close
     
     Returns:
@@ -1434,12 +1434,29 @@ async def close_position(
     """
     logger.info(f"Closing {position_type} position for {symbol}")
     
+    # Coerce numeric types to handle schema validation issues
+    from src.modules.utils import coerce_numeric, coerce_integer
+    
+    # Ensure proper types
+    quantity = coerce_integer(quantity, 'quantity') or quantity
+    limit_price = coerce_numeric(limit_price, 'limit_price') if limit_price is not None else None
+    
+    # Validate limit order requirements
+    if order_type == 'LMT' and limit_price is None:
+        return {
+            'status': 'error',
+            'error': 'MISSING_LIMIT_PRICE',
+            'message': 'Limit orders require limit_price parameter. Use MKT for market orders.',
+            'function': 'trade_close_position'
+        }
+    
     # CRITICAL: Safety validation for position closing
     params = {
         'symbol': symbol,
         'position_type': position_type,
         'quantity': quantity,
         'order_type': order_type,
+        'limit_price': limit_price,  # Include for validation
         'confirm_token': confirm_token
     }
     
@@ -1739,6 +1756,15 @@ async def create_conditional_order(
     """
     logger.info(f"Creating conditional {action} order for {symbol}")
     
+    # Coerce numeric types to handle schema validation issues
+    from src.modules.utils import coerce_numeric, coerce_integer
+    
+    # Ensure proper types
+    quantity = coerce_integer(quantity, 'quantity') or quantity
+    limit_price = coerce_numeric(limit_price, 'limit_price') if limit_price is not None else None
+    stop_price = coerce_numeric(stop_price, 'stop_price') if stop_price is not None else None
+    strike = coerce_numeric(strike, 'strike') if strike is not None else None
+    
     # CRITICAL: Safety validation for conditional orders
     params = {
         'action': action,
@@ -1746,7 +1772,9 @@ async def create_conditional_order(
         'conditions': conditions,
         'confirm_token': confirm_token,
         'quantity': quantity,
-        'symbol': symbol
+        'symbol': symbol,
+        'limit_price': limit_price,
+        'stop_price': stop_price
     }
     
     is_valid, error_message = ExecutionSafety.validate_execution_request(
@@ -1843,6 +1871,15 @@ async def buy_to_close_option(
     """
     logger.info(f"Creating buy-to-close order for {quantity} {symbol} {strike}{right}")
     
+    # Coerce numeric types to handle schema validation issues
+    from src.modules.utils import coerce_numeric, coerce_integer
+    
+    # Ensure proper types
+    strike = coerce_numeric(strike, 'strike') or strike
+    quantity = coerce_integer(quantity, 'quantity') or quantity
+    limit_price = coerce_numeric(limit_price, 'limit_price') if limit_price is not None else None
+    trigger_price = coerce_numeric(trigger_price, 'trigger_price') if trigger_price is not None else None
+    
     # CRITICAL: Safety validation BEFORE any execution logic
     params = {
         'trigger_condition': trigger_condition,
@@ -1850,7 +1887,8 @@ async def buy_to_close_option(
         'confirm_token': confirm_token,
         'trigger_price': trigger_price,
         'symbol': symbol,
-        'quantity': quantity
+        'quantity': quantity,
+        'limit_price': limit_price
     }
     
     is_valid, error_message = ExecutionSafety.validate_execution_request(

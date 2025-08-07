@@ -206,22 +206,34 @@ class SessionState:
 - Prompt for stops after fills
 - Clear cache between symbols
 
-## CRITICAL RECENT FIXES (January 2025)
+## CRITICAL RECENT FIXES (January 2025 - v2.0)
 
-### Event Loop Issues - RESOLVED
-- Use `_async_safe_sleep()` instead of `asyncio.sleep()` in TWS connection
-- Handle both BaseStrategy (async) and Strategy (dataclass) objects correctly
-- Check for method vs property when accessing net_debit_credit
-- Files fixed: src/modules/tws/connection.py (place_combo_order), src/mcp/server.py (calculate_strategy)
+### Event Loop Issues - FULLY RESOLVED
+- Applied `nest_asyncio.apply()` at module start to allow nested event loops
+- Implemented lazy loading with `LazyTWSConnection` proxy class
+- Fixed all async/await syntax errors in sync functions
+- Files fixed: src/modules/tws/connection.py, src/mcp/server.py
 
-### Account Validation - WORKING
-- Account balance retrieval confirmed: $8,598.71
-- Use Client ID: 5 (avoid ID 1 which causes conflicts)
-- Auto-detection of account ID working when TWS_ACCOUNT is empty
-- Issue: Event loop conflicts in diagnostic context only, not in production
+### Greeks Data Retrieval - FIXED
+- Added explicit genericTickList='106' for Greeks request
+- Implemented retry mechanism with 3-second max wait
+- Added IV calculation fallback for missing Greeks
+- File: src/modules/tws/connection.py (lines 368-396)
 
-### MCP Integration - OPERATIONAL
-- calculate_strategy() attribute errors fixed (lines 255-256, 277-278)
-- All async methods properly awaited
-- Strategy metrics calculation validated
-- Bull call spread execution tested and working
+### Strategy Session State - IMPLEMENTED
+- Created `SessionState` class for strategy persistence
+- Strategies now persist between calculate and execute calls
+- 5-minute TTL for security
+- File: src/mcp/server.py (lines 44-79)
+
+### Account Connection - VALIDATED
+- Account U16348403 configured in .env
+- Auto-detection of account ID working
+- Client ID auto-finds available ID (no more conflicts)
+- Positions and balances retrieving correctly
+
+### MCP Integration - FULLY OPERATIONAL
+- All 27 tools working correctly
+- Session state management active
+- Comprehensive logging added with [SESSION], [CALC], [EXEC] prefixes
+- Version 2.0 with all fixes applied

@@ -2,7 +2,12 @@
 """
 SumpPump MCP Server - Main entry point.
 Provides MCP tools for IBKR options trading through Claude Desktop.
+VERSION: 2.0 - With Session State Management
 """
+
+# Apply nest_asyncio immediately to prevent event loop conflicts
+import nest_asyncio
+nest_asyncio.apply()
 
 import asyncio
 import sys
@@ -39,6 +44,59 @@ else:
 
 # Initialize MCP server
 mcp = FastMCP("sump-pump")
+
+# Session state management for strategies
+class SessionState:
+    """Manages state between MCP tool calls."""
+    def __init__(self):
+        self.current_strategy = None  # BaseStrategy object
+        self.current_strategy_dict = None  # Dict representation
+        self.current_symbol = None
+        self.last_calculated = None
+        
+    def save_strategy(self, strategy_obj, strategy_dict, symbol):
+        """Save calculated strategy for execution."""
+        self.current_strategy = strategy_obj
+        self.current_strategy_dict = strategy_dict
+        self.current_symbol = symbol
+        self.last_calculated = datetime.now()
+        
+        # Detailed logging for debugging
+        logger.info(f"[SESSION] Saving strategy for {symbol}")
+        logger.info(f"[SESSION] Strategy type: {strategy_dict.get('strategy_type')}")
+        logger.info(f"[SESSION] Has legs in dict: {len(strategy_dict.get('legs', [])) > 0}")
+        logger.info(f"[SESSION] Strategy object type: {type(strategy_obj).__name__}")
+        if hasattr(strategy_obj, 'legs'):
+            logger.info(f"[SESSION] Strategy object has {len(strategy_obj.legs)} legs")
+        logger.info(f"[SESSION] Max loss: {strategy_dict.get('max_loss_raw')}")
+        logger.info(f"[SESSION] Session ID: {id(self)}")
+        
+    def get_strategy(self):
+        """Get saved strategy if available."""
+        logger.info(f"[SESSION] Getting strategy from session (ID: {id(self)})")
+        
+        if self.current_strategy and self.last_calculated:
+            # Check if strategy is still fresh (within 5 minutes)
+            age = (datetime.now() - self.last_calculated).total_seconds()
+            if age < 300:  # 5 minutes
+                logger.info(f"[SESSION] Found valid strategy for {self.current_symbol} (age: {age:.1f}s)")
+                logger.info(f"[SESSION] Strategy dict has legs: {len(self.current_strategy_dict.get('legs', [])) > 0}")
+                return self.current_strategy, self.current_strategy_dict
+            else:
+                logger.warning(f"[SESSION] Strategy expired (age: {age}s)")
+        else:
+            logger.warning(f"[SESSION] No strategy in session - strategy: {self.current_strategy is not None}, timestamp: {self.last_calculated is not None}")
+        return None, None
+        
+    def clear(self):
+        """Clear session state."""
+        self.current_strategy = None
+        self.current_strategy_dict = None
+        self.current_symbol = None
+        self.last_calculated = None
+
+# Global session state
+session_state = SessionState()
 
 # Data models for MCP tools
 class OptionsChainRequest(BaseModel):
@@ -170,7 +228,10 @@ async def calculate_strategy(
     Returns:
         Strategy analysis with max profit, max loss, breakeven
     """
-    logger.info(f"Calculating {strategy_type} for {symbol}")
+    logger.info(f"[CALC] === CALCULATE_STRATEGY CALLED ===")
+    logger.info(f"[CALC] Symbol: {symbol}, Type: {strategy_type}, Strikes: {strikes}")
+    logger.info(f"[CALC] Session state ID: {id(session_state)}")
+    logger.info(f"[CALC] Current session symbol: {session_state.current_symbol}")
     
     try:
         # Import modules
@@ -267,7 +328,17 @@ async def calculate_strategy(
                 'message': "You must pay premium upfront with Level 2 permissions."
             }
         
-        return {
+        # Log strategy object details before creating dict
+        logger.info(f"[CALC] Building strategy dict for {strategy_type}")
+        logger.info(f"[CALC] Strategy object type: {type(strategy).__name__}")
+        logger.info(f"[CALC] Strategy has legs attr: {hasattr(strategy, 'legs')}")
+        if hasattr(strategy, 'legs'):
+            logger.info(f"[CALC] Number of legs: {len(strategy.legs)}")
+            for i, leg in enumerate(strategy.legs):
+                logger.info(f"[CALC] Leg {i}: {type(leg).__name__} - {leg.action if hasattr(leg, 'action') else 'no action'}")
+        
+        # Create the strategy dict with all needed info
+        strategy_dict = {
             'strategy_type': strategy_type,
             'symbol': symbol,
             'strikes': strikes,
@@ -282,8 +353,28 @@ async def calculate_strategy(
                 'greeks': greeks
             },
             'level2_compliant': True,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            # Add the strategy object data for execution
+            'legs': strategy.legs if hasattr(strategy, 'legs') else [],
+            'name': strategy.name if hasattr(strategy, 'name') else f"{strategy_type} Strategy",
+            'max_profit_raw': max_profit,
+            'max_loss_raw': max_loss,
+            'required_capital': abs(net_debit_credit)
         }
+        
+        logger.info(f"[CALC] Strategy dict created with {len(strategy_dict.get('legs', []))} legs")
+        logger.info(f"[CALC] Calling session_state.save_strategy()")
+        
+        # Save strategy to session state for execution
+        session_state.save_strategy(strategy, strategy_dict, symbol)
+        
+        logger.info(f"[CALC] Strategy saved to session state")
+        
+        # Add execution hint
+        strategy_dict['ready_to_execute'] = True
+        strategy_dict['execute_hint'] = "Strategy calculated and ready. Use trade_execute() with confirmation token to place order."
+        
+        return strategy_dict
         
     except Level2StrategyError as e:
         return {
@@ -298,8 +389,8 @@ async def calculate_strategy(
 # MCP Tool: Execute Trade
 @mcp.tool(name="trade_execute")
 async def execute_trade(
-    strategy: Dict[str, Any],
-    confirm_token: str
+    confirm_token: str,
+    strategy: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     [TRADING] Execute live trades through IBKR TWS.
@@ -312,8 +403,8 @@ async def execute_trade(
     - Will prompt for STOP LOSS after fill
     
     Args:
-        strategy: Complete strategy details (must be Level 2 compliant)
         confirm_token: Must be exactly "USER_CONFIRMED"
+        strategy: Optional strategy dict (uses saved strategy if not provided)
     
     Returns:
         Execution status, fill details, and stop loss prompt
@@ -327,6 +418,28 @@ async def execute_trade(
             "required": "confirm_token must be exactly 'USER_CONFIRMED'",
             "message": "Trade execution requires explicit user confirmation"
         }
+    
+    # Get strategy from session state if not provided
+    saved_strategy = None
+    logger.info(f"[EXEC] Execute called with strategy param: {strategy is not None}")
+    
+    if strategy is None:
+        logger.info(f"[EXEC] No strategy provided, checking session state")
+        saved_strategy, strategy = session_state.get_strategy()
+        
+        if not strategy:
+            logger.error(f"[EXEC] No strategy found in session state")
+            return {
+                'error': 'No strategy available',
+                'message': 'You must first calculate a strategy before executing.',
+                'required_flow': '1. get_options_chain() → 2. calculate_strategy() → 3. execute_trade()',
+                'hint': 'Call calculate_strategy() with your desired strikes and strategy type first.'
+            }
+        
+        logger.info(f"[EXEC] Using saved strategy for {strategy.get('symbol')}")
+        logger.info(f"[EXEC] Saved strategy has {len(strategy.get('legs', []))} legs")
+    else:
+        logger.info(f"[EXEC] Using provided strategy with {len(strategy.get('legs', []))} legs")
     
     try:
         # Import modules
@@ -406,16 +519,24 @@ async def execute_trade(
             # Get strategy type
             strategy_type = StrategyType(strategy.get('strategy_type', 'long_call'))
             
-            # Extract legs if they exist, otherwise create basic structure
+            # Extract legs if they exist
             legs = strategy.get('legs', [])
+            logger.info(f"[EXEC] Extracted {len(legs)} legs from strategy dict")
+            
             if not legs:
-                # This is a simplified strategy without legs - we need to rebuild it
-                logger.warning("Strategy missing legs - execution needs to be called after calculate_strategy")
-                return {
-                    'error': 'Strategy incomplete',
-                    'message': 'You must first calculate the strategy before executing. Please call calculate_strategy() first.',
-                    'required_flow': '1. get_options_chain() → 2. calculate_strategy() → 3. execute_trade()'
-                }
+                logger.warning(f"[EXEC] No legs in strategy dict, checking saved_strategy object")
+                # Try to get from saved strategy object
+                if saved_strategy and hasattr(saved_strategy, 'legs'):
+                    legs = saved_strategy.legs
+                    logger.info(f"[EXEC] Retrieved {len(legs)} legs from saved strategy object")
+                else:
+                    logger.error(f"[EXEC] No legs found anywhere - saved_strategy: {saved_strategy is not None}, has legs: {hasattr(saved_strategy, 'legs') if saved_strategy else False}")
+                    logger.error(f"[EXEC] Strategy keys: {list(strategy.keys())}")
+                    return {
+                        'error': 'Strategy incomplete',
+                        'message': 'Strategy has no leg information. Please recalculate the strategy.',
+                        'required_flow': '1. get_options_chain() → 2. calculate_strategy() → 3. execute_trade()'
+                    }
             
             strategy_obj = StrategyModel(
                 name=strategy.get('name', f"{strategy_type.value} Strategy"),
@@ -2047,9 +2168,13 @@ async def ensure_tws_connected():
 # Main entry point
 def main():
     """Run the MCP server."""
+    logger.info("="*60)
     logger.info(f"Starting {config.mcp.server_name} MCP server...")
+    logger.info("VERSION: 2.0 - With Session State Management")
+    logger.info(f"Session state ID: {id(session_state)}")
     logger.info(f"TWS connection: {config.tws.host}:{config.tws.port}")
     logger.info(f"Risk controls: Confirmation={config.risk.require_confirmation}")
+    logger.info("="*60)
     
     try:
         # Run the MCP server

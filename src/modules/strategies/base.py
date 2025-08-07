@@ -391,7 +391,7 @@ class BaseStrategy(ABC):
         else:  # PUT
             return max(0, contract.strike - underlying_price)
     
-    def _find_breakeven_in_range(self, price_range: Tuple[float, float], tolerance: float = 0.01) -> Optional[float]:
+    async def _find_breakeven_in_range(self, price_range: Tuple[float, float], tolerance: float = 0.01) -> Optional[float]:
         """
         Find breakeven point in given price range using numerical methods.
         

@@ -10,9 +10,23 @@ from datetime import datetime, date
 from contextlib import asynccontextmanager
 from decimal import Decimal
 
+# Apply nest_asyncio to allow nested event loops
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass  # Will log warning below
+
 from ib_async import IB, Contract, Option, Stock, MarketOrder, LimitOrder, ComboLeg, Order, util
 from loguru import logger
 import math
+
+# Log nest_asyncio status after logger is imported
+try:
+    import nest_asyncio
+    logger.info("nest_asyncio applied - nested event loops enabled")
+except ImportError:
+    logger.warning("nest_asyncio not installed - install with: pip install nest-asyncio")
 
 from src.config import config
 from src.models import OptionContract, OptionRight, Greeks, Strategy
@@ -104,6 +118,7 @@ class TWSConnection:
             TWSConnectionError: If connection fails after max attempts
         """
         if not self.ib:
+            logger.info("Creating new IB instance in async context")
             self.ib = IB()
         
         # Find available client ID if not already set
@@ -202,8 +217,17 @@ class TWSConnection:
             
     async def ensure_connected(self) -> None:
         """Ensure connection is active, reconnect if needed."""
-        if not self.connected or not self.ib.isConnected():
-            logger.warning("Connection lost, attempting to reconnect...")
+        if not self.connected or (self.ib and not self.ib.isConnected()):
+            logger.warning("Connection lost or not established, attempting to connect...")
+            
+            # Check if we're in an event loop already
+            try:
+                loop = asyncio.get_running_loop()
+                logger.debug(f"Running in existing event loop: {id(loop)}")
+            except RuntimeError:
+                logger.error("No running event loop - cannot connect in sync context")
+                raise TWSConnectionError("Must call ensure_connected from async context")
+            
             await self.connect()
             
     @asynccontextmanager
@@ -367,7 +391,7 @@ class TWSConnection:
                             # Request market data with Greek computation
                             ticker = self.ib.reqMktData(
                                 option, 
-                                '',  # Simplified - let IBKR decide what to send
+                                '106',  # Request Greeks explicitly (13=model option, 106=option Greeks)
                                 False, 
                                 False
                             )
@@ -375,8 +399,25 @@ class TWSConnection:
                             self._active_subscriptions.add(option)
                             self._subscription_count += 1
                             
-                            # Wait for data to populate
-                            await asyncio.sleep(0.5)
+                            # Wait longer for Greeks data to populate with retry
+                            max_wait = 3  # Max 3 seconds total
+                            wait_interval = 0.5
+                            waited = 0
+                            
+                            while waited < max_wait:
+                                await asyncio.sleep(wait_interval)
+                                waited += wait_interval
+                                
+                                # Check if Greeks have arrived
+                                if hasattr(ticker, 'modelGreeks') and ticker.modelGreeks:
+                                    logger.debug(f"Greeks received after {waited}s for {symbol} {strike} {right}")
+                                    break
+                                elif ticker.bid is not None and ticker.ask is not None:
+                                    # We have prices but no Greeks yet
+                                    if waited >= 2.0:  # After 2 seconds, try to request IV calculation
+                                        mid_price = (ticker.bid + ticker.ask) / 2
+                                        self.ib.reqCalculateImpliedVolatility(option, mid_price, underlying_price)
+                                        logger.debug(f"Requested IV calculation for {symbol} {strike} {right}")
                                 
                             # Extract data
                             if ticker.bid is not None and ticker.ask is not None:
@@ -1091,5 +1132,24 @@ class TWSConnection:
             logger.error(f"Failed to place OCA orders: {e}")
             raise TWSConnectionError(f"Failed to place OCA orders: {e}")
 
-# Global connection instance
-tws_connection = TWSConnection()
+# Global connection instance - lazy initialization
+_tws_connection_instance = None
+
+def get_tws_connection():
+    """Get or create the global TWS connection instance."""
+    global _tws_connection_instance
+    if _tws_connection_instance is None:
+        logger.info("Creating new TWS connection instance (lazy)")
+        _tws_connection_instance = TWSConnection()
+    return _tws_connection_instance
+
+# Lazy singleton - don't create until first use
+class LazyTWSConnection:
+    """Proxy that creates connection on first attribute access."""
+    
+    def __getattr__(self, name):
+        """Create connection on first access."""
+        return getattr(get_tws_connection(), name)
+
+# Use lazy proxy to prevent immediate instantiation
+tws_connection = LazyTWSConnection()

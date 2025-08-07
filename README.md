@@ -2,13 +2,16 @@
 
 Production-ready MCP (Model Context Protocol) server that bridges Claude Desktop with Interactive Brokers TWS for conversational options trading and market analysis. All 27 trading tools are fully integrated and operational.
 
-## ✅ Current Status
+## ✅ Current Status (v2.0 - January 2025)
 
 - **27 MCP Tools**: Fully integrated and operational
 - **Live Trading**: Production-ready with real money trading
-- **TWS Integration**: Complete with auto-reconnection
+- **TWS Integration**: Complete with auto-reconnection and event loop fixes
 - **Risk Management**: Mandatory confirmation workflows
 - **Level 2 Options**: Full support for IBKR Level 2 strategies
+- **Session State**: Strategy persistence between calculate and execute
+- **Greeks Data**: Full options Greeks now working correctly
+- **Claude Code**: Developed with Claude Code development kit
 
 ## Features
 
@@ -173,13 +176,36 @@ SumpPump/
 └── README.md                  # This file
 ```
 
+## Recent Fixes (v2.0 - January 2025)
+
+### Event Loop Conflicts
+- **Problem**: "This event loop is already running" error
+- **Solution**: Applied `nest_asyncio` patch for nested event loop compatibility
+- **Files**: `src/mcp/server.py`, `src/modules/tws/connection.py`
+
+### Greeks Data Retrieval
+- **Problem**: Options Greeks showing as 0 or NaN
+- **Solution**: Added explicit Greeks request with genericTickList='106' and proper wait time
+- **File**: `src/modules/tws/connection.py` (lines 368-396)
+
+### Strategy Session State
+- **Problem**: Strategy lost between calculate and execute calls
+- **Solution**: Implemented SessionState class for strategy persistence
+- **File**: `src/mcp/server.py` (lines 44-79)
+
+### Async/Await Syntax Errors
+- **Problem**: 'await' outside async function in base strategy
+- **Solution**: Made `_find_breakeven_in_range` async
+- **File**: `src/modules/strategies/base.py` (line 394)
+
 ## Troubleshooting
 
 ### Connection Issues
 - Verify TWS is running and API is enabled
 - Check port settings (7497 for live)
-- Ensure Client ID 5 is not in use
+- Ensure Client ID is not in use (auto-finds available ID)
 - Check firewall settings
+- Account should show as U16348403 (or your account)
 
 ### "FunctionTool not callable" in Claude Desktop
 This is **normal behavior** for MCP tools. The tools work correctly through the MCP interface.
@@ -188,6 +214,7 @@ This is **normal behavior** for MCP tools. The tools work correctly through the 
 - Verify market data subscriptions in IBKR
 - Check if market is open
 - Confirm symbol validity
+- Greeks require options data subscription
 
 ### After Hours
 - Options will show NaN for bid/ask

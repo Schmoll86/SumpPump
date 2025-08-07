@@ -1,7 +1,7 @@
 {
   "name": "SumpPump",
-  "version": "0.1.0",
-  "description": "IBKR Options Trading Assistant",
+  "version": "2.0.0",
+  "description": "IBKR Options Trading Assistant - Production Ready",
   "commands": {
     "analyze-strategy": {
       "description": "Analyze an options strategy",

@@ -23,6 +23,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from src.config import config
+from src.modules.safety import ExecutionSafety, _async_safe_sleep
 
 # Configure logging
 if config.log.log_format == "json":
@@ -413,13 +414,28 @@ async def execute_trade(
     """
     logger.warning(f"Trade execution requested with token: {confirm_token}")
     
-    # CRITICAL: Validate confirmation token
-    if confirm_token != "USER_CONFIRMED":
+    # CRITICAL: Safety validation BEFORE execution
+    params = {
+        'confirm_token': confirm_token,
+        'strategy': strategy
+    }
+    is_valid, error_message = ExecutionSafety.validate_execution_request(
+        'trade_execute',
+        params
+    )
+    
+    if not is_valid:
+        ExecutionSafety.log_execution_attempt('trade_execute', params, False)
         return {
-            "error": "Invalid confirmation token",
-            "required": "confirm_token must be exactly 'USER_CONFIRMED'",
-            "message": "Trade execution requires explicit user confirmation"
+            "status": "blocked",
+            "error": "SAFETY_CHECK_FAILED",
+            "message": error_message,
+            "function": "trade_execute",
+            "action_required": "Add confirm_token='USER_CONFIRMED' to execute"
         }
+    
+    # Log successful validation
+    ExecutionSafety.log_execution_attempt('trade_execute', params, True)
     
     # Get strategy from session state if not provided
     saved_strategy = None
@@ -1398,7 +1414,8 @@ async def close_position(
     quantity: int,
     order_type: str = 'MKT',  # 'MKT' or 'LMT'
     limit_price: Optional[float] = None,
-    position_id: Optional[str] = None  # Optional specific position ID
+    position_id: Optional[str] = None,  # Optional specific position ID
+    confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     [TRADING] Close IBKR trading positions.
@@ -1416,6 +1433,33 @@ async def close_position(
         Order execution result
     """
     logger.info(f"Closing {position_type} position for {symbol}")
+    
+    # CRITICAL: Safety validation for position closing
+    params = {
+        'symbol': symbol,
+        'position_type': position_type,
+        'quantity': quantity,
+        'order_type': order_type,
+        'confirm_token': confirm_token
+    }
+    
+    is_valid, error_message = ExecutionSafety.validate_execution_request(
+        'trade_close_position',
+        params
+    )
+    
+    if not is_valid:
+        ExecutionSafety.log_execution_attempt('trade_close_position', params, False)
+        return {
+            "status": "blocked",
+            "error": "SAFETY_CHECK_FAILED",
+            "message": error_message,
+            "function": "trade_close_position",
+            "action_required": "Add confirm_token='USER_CONFIRMED' for immediate execution"
+        }
+    
+    # Log successful validation
+    ExecutionSafety.log_execution_attempt('trade_close_position', params, True)
     
     try:
         from src.modules.execution.advanced_orders import close_position as close_position_impl
@@ -1445,7 +1489,8 @@ async def set_stop_loss(
     stop_price: float,
     stop_type: str = 'fixed',  # 'fixed' or 'trailing'
     trailing_amount: Optional[float] = None,  # For trailing stops (dollars or percent)
-    trailing_type: Optional[str] = 'amount'  # 'amount' or 'percent'
+    trailing_type: Optional[str] = 'amount',  # 'amount' or 'percent'
+    confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Set a stop loss order for an existing position.
@@ -1461,6 +1506,32 @@ async def set_stop_loss(
         Stop order confirmation
     """
     logger.info(f"Setting {stop_type} stop loss for position {position_id} at {stop_price}")
+    
+    # CRITICAL: Safety validation for stop loss orders
+    params = {
+        'position_id': position_id,
+        'stop_price': stop_price,
+        'stop_type': stop_type,
+        'confirm_token': confirm_token
+    }
+    
+    is_valid, error_message = ExecutionSafety.validate_execution_request(
+        'trade_set_stop_loss',
+        params
+    )
+    
+    if not is_valid:
+        ExecutionSafety.log_execution_attempt('trade_set_stop_loss', params, False)
+        return {
+            "status": "blocked",
+            "error": "SAFETY_CHECK_FAILED",
+            "message": error_message,
+            "function": "trade_set_stop_loss",
+            "action_required": "Add confirmation if this creates immediate orders"
+        }
+    
+    # Log successful validation
+    ExecutionSafety.log_execution_attempt('trade_set_stop_loss', params, True)
     
     try:
         # Import required modules
@@ -1495,7 +1566,8 @@ async def modify_order(
     order_id: str,
     new_limit_price: Optional[float] = None,
     new_quantity: Optional[int] = None,
-    new_stop_price: Optional[float] = None
+    new_stop_price: Optional[float] = None,
+    confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Modify an existing pending order.
@@ -1510,6 +1582,33 @@ async def modify_order(
         Modification confirmation
     """
     logger.info(f"Modifying order {order_id}")
+    
+    # CRITICAL: Safety validation for order modification 
+    params = {
+        'order_id': order_id,
+        'new_limit_price': new_limit_price,
+        'new_quantity': new_quantity,
+        'new_stop_price': new_stop_price,
+        'confirm_token': confirm_token
+    }
+    
+    is_valid, error_message = ExecutionSafety.validate_execution_request(
+        'trade_modify_order',
+        params
+    )
+    
+    if not is_valid:
+        ExecutionSafety.log_execution_attempt('trade_modify_order', params, False)
+        return {
+            "status": "blocked",
+            "error": "SAFETY_CHECK_FAILED",
+            "message": error_message,
+            "function": "trade_modify_order",
+            "action_required": "Add confirmation for order modifications"
+        }
+    
+    # Log successful validation
+    ExecutionSafety.log_execution_attempt('trade_modify_order', params, True)
     
     try:
         from src.modules.tws.connection import tws_connection
@@ -1539,7 +1638,8 @@ async def modify_order(
 @mcp.tool(name="trade_cancel_order")
 async def cancel_order(
     order_id: str,
-    cancel_all: bool = False
+    cancel_all: bool = False,
+    confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Cancel a pending order or all open orders.
@@ -1590,7 +1690,8 @@ async def create_conditional_order(
     expiry: Optional[str] = None,
     right: Optional[str] = None,
     trigger_method: str = 'Last',
-    outside_rth: bool = False
+    outside_rth: bool = False,
+    confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Create a conditional order with multiple trigger conditions.
@@ -1633,6 +1734,34 @@ async def create_conditional_order(
     """
     logger.info(f"Creating conditional {action} order for {symbol}")
     
+    # CRITICAL: Safety validation for conditional orders
+    params = {
+        'action': action,
+        'order_type': order_type,
+        'conditions': conditions,
+        'confirm_token': confirm_token,
+        'quantity': quantity,
+        'symbol': symbol
+    }
+    
+    is_valid, error_message = ExecutionSafety.validate_execution_request(
+        'trade_create_conditional_order',
+        params
+    )
+    
+    if not is_valid:
+        ExecutionSafety.log_execution_attempt('trade_create_conditional_order', params, False)
+        return {
+            "status": "blocked",
+            "error": "SAFETY_CHECK_FAILED", 
+            "message": error_message,
+            "function": "trade_create_conditional_order",
+            "action_required": "Review parameters and add confirmation if needed"
+        }
+    
+    # Log successful validation
+    ExecutionSafety.log_execution_attempt('trade_create_conditional_order', params, True)
+    
     try:
         from src.modules.tws.connection import tws_connection
         from src.modules.execution.conditional_orders import create_conditional_order as create_conditional_impl
@@ -1671,13 +1800,14 @@ async def create_conditional_order(
 async def buy_to_close_option(
     symbol: str,
     strike: float,
-    expiry: str,  # YYYYMMDD
-    right: str,  # 'C' or 'P'
+    expiry: str,  # YYYYMMDD format
+    right: str,  # 'C' for call, 'P' for put
     quantity: int,
     order_type: str = 'MKT',
     limit_price: Optional[float] = None,
     trigger_price: Optional[float] = None,
-    trigger_condition: str = 'immediate'  # 'immediate', 'above', 'below'
+    trigger_condition: str = 'immediate',  # 'immediate', 'above', 'below'
+    confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Create a buy-to-close order for a short option position.
@@ -1707,6 +1837,34 @@ async def buy_to_close_option(
         )
     """
     logger.info(f"Creating buy-to-close order for {quantity} {symbol} {strike}{right}")
+    
+    # CRITICAL: Safety validation BEFORE any execution logic
+    params = {
+        'trigger_condition': trigger_condition,
+        'order_type': order_type,
+        'confirm_token': confirm_token,
+        'trigger_price': trigger_price,
+        'symbol': symbol,
+        'quantity': quantity
+    }
+    
+    is_valid, error_message = ExecutionSafety.validate_execution_request(
+        'trade_buy_to_close',
+        params
+    )
+    
+    if not is_valid:
+        ExecutionSafety.log_execution_attempt('trade_buy_to_close', params, False)
+        return {
+            "status": "blocked", 
+            "error": "SAFETY_CHECK_FAILED",
+            "message": error_message,
+            "function": "trade_buy_to_close",
+            "action_required": "Add confirm_token='USER_CONFIRMED' for immediate execution"
+        }
+    
+    # Log successful validation
+    ExecutionSafety.log_execution_attempt('trade_buy_to_close', params, True)
     
     try:
         from src.modules.tws.connection import tws_connection
@@ -1741,7 +1899,7 @@ async def buy_to_close_option(
             # Place order
             trade = tws_connection.ib.placeOrder(option, order)
             
-            await asyncio.sleep(2)
+            await _async_safe_sleep(2.0)
             
             return {
                 'status': 'success',
@@ -1798,7 +1956,8 @@ async def set_price_alert(
     trigger_price: float,
     condition: str = 'above',  # 'above' or 'below'
     action: str = 'notify',  # 'notify', 'close_position', 'place_order'
-    action_params: Optional[Dict[str, Any]] = None
+    action_params: Optional[Dict[str, Any]] = None,
+    confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Set a price-triggered alert or action.
@@ -1841,7 +2000,8 @@ async def roll_option_position(
     position_id: str,
     new_strike: Optional[float] = None,
     new_expiry: Optional[str] = None,  # Format: YYYY-MM-DD
-    roll_type: str = 'calendar'  # 'calendar', 'diagonal', 'vertical'
+    roll_type: str = 'calendar',  # 'calendar', 'diagonal', 'vertical'
+    confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Roll an option position to a different strike and/or expiration.
@@ -1856,6 +2016,33 @@ async def roll_option_position(
         Roll execution confirmation with both closing and opening trades
     """
     logger.info(f"Rolling position {position_id} using {roll_type} roll")
+    
+    # CRITICAL: Safety validation for option rolling (creates new trades)
+    params = {
+        'position_id': position_id,
+        'new_strike': new_strike,
+        'new_expiry': new_expiry,
+        'roll_type': roll_type,
+        'confirm_token': confirm_token
+    }
+    
+    is_valid, error_message = ExecutionSafety.validate_execution_request(
+        'trade_roll_option',
+        params
+    )
+    
+    if not is_valid:
+        ExecutionSafety.log_execution_attempt('trade_roll_option', params, False)
+        return {
+            "status": "blocked",
+            "error": "SAFETY_CHECK_FAILED",
+            "message": error_message,
+            "function": "trade_roll_option",
+            "action_required": "Add confirm_token='USER_CONFIRMED' to execute roll"
+        }
+    
+    # Log successful validation
+    ExecutionSafety.log_execution_attempt('trade_roll_option', params, True)
     
     try:
         from src.modules.execution.advanced_orders import roll_option_position as roll_option_impl

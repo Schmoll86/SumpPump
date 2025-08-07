@@ -621,29 +621,7 @@ async def execute_trade(
             'message': 'Trade execution failed. No order was placed.'
         }
 
-# MCP Tool: Set Stop Loss
-@mcp.tool(name="trade_set_stop_loss")
-async def set_stop_loss(
-    position_id: str,
-    stop_price: float
-) -> Dict[str, Any]:
-    """
-    Set a stop loss order for an existing position.
-    
-    Args:
-        position_id: Position identifier
-        stop_price: Stop loss trigger price
-    
-    Returns:
-        Stop order confirmation
-    """
-    logger.info(f"Setting stop loss for position {position_id} at {stop_price}")
-    
-    return {
-        "position_id": position_id,
-        "stop_price": stop_price,
-        "status": "pending_implementation"
-    }
+# Note: trade_set_stop_loss is implemented below with full functionality
 
 # MCP Tool: Get News
 @mcp.tool(name="trade_get_news")
@@ -1485,7 +1463,14 @@ async def set_stop_loss(
     logger.info(f"Setting {stop_type} stop loss for position {position_id} at {stop_price}")
     
     try:
+        # Import required modules
+        from src.modules.tws.connection import tws_connection
         from src.modules.execution.advanced_orders import set_stop_loss as set_stop_loss_impl
+        
+        # Ensure connection
+        await tws_connection.ensure_connected()
+        
+        # Set the stop loss
         result = await set_stop_loss_impl(
             tws_connection,
             position_id,
@@ -1527,7 +1512,12 @@ async def modify_order(
     logger.info(f"Modifying order {order_id}")
     
     try:
+        from src.modules.tws.connection import tws_connection
         from src.modules.execution.advanced_orders import modify_order as modify_order_impl
+        
+        # Ensure connection
+        await tws_connection.ensure_connected()
+        
         result = await modify_order_impl(
             tws_connection,
             order_id,
@@ -1564,7 +1554,12 @@ async def cancel_order(
     logger.info(f"Cancelling {'all orders' if cancel_all else f'order {order_id}'}")
     
     try:
+        from src.modules.tws.connection import tws_connection
         from src.modules.execution.advanced_orders import cancel_order as cancel_order_impl
+        
+        # Ensure connection
+        await tws_connection.ensure_connected()
+        
         result = await cancel_order_impl(
             tws_connection,
             order_id,

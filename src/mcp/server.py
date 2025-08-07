@@ -1462,7 +1462,12 @@ async def close_position(
     ExecutionSafety.log_execution_attempt('trade_close_position', params, True)
     
     try:
+        from src.modules.tws.connection import tws_connection
         from src.modules.execution.advanced_orders import close_position as close_position_impl
+        
+        # Ensure connection
+        await tws_connection.ensure_connected()
+        
         result = await close_position_impl(
             tws_connection,
             symbol,
@@ -2424,15 +2429,17 @@ async def get_volatility_analysis(symbol: str) -> Dict[str, Any]:
     logger.info(f"Fetching volatility metrics for {symbol}")
     
     try:
+        from src.modules.tws.connection import tws_connection
         await ensure_tws_connected()
         
-        # Get historical volatility from price history
+        # Get historical volatility from price history directly
+        # Call the get_price_history MCP tool function directly
         history = await get_price_history(symbol, duration='3 M', bar_size='1 day')
-        if history.get('status') != 'success':
-            return history
         
         # Calculate historical volatility
-        closes = [bar['close'] for bar in history['bars']]
+        closes = []
+        if history and history.get('status') == 'success' and 'bars' in history:
+            closes = [bar['close'] for bar in history['bars']]
         if len(closes) > 1:
             returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
             avg_return = sum(returns) / len(returns)
@@ -2443,8 +2450,9 @@ async def get_volatility_analysis(symbol: str) -> Dict[str, Any]:
             hv_30 = 0
         
         # Get current quote for ATM strike
+        # Call the get_quote MCP tool function directly
         quote = await get_quote(symbol)
-        current_price = quote.get('last', 0)
+        current_price = quote.get('last', 0) if quote and quote.get('status') == 'success' else 0
         
         # Get options chain for IV
         from src.modules.data import options_data
@@ -2526,19 +2534,21 @@ async def get_watchlist_quotes(symbols: List[str]) -> Dict[str, Any]:
     logger.info(f"Fetching quotes for {len(symbols)} symbols")
     
     try:
+        from src.modules.tws.connection import tws_connection
         await ensure_tws_connected()
         
         quotes = []
         errors = []
         
         # Fetch each quote
+        # Call the get_quote MCP tool function directly
         for symbol in symbols:
             try:
                 quote = await get_quote(symbol)
-                if quote.get('status') == 'success':
+                if quote and quote.get('status') == 'success':
                     quotes.append(quote)
                 else:
-                    errors.append({'symbol': symbol, 'error': quote.get('error', 'Unknown error')})
+                    errors.append({'symbol': symbol, 'error': quote.get('error', 'No quote data returned') if quote else 'No quote returned'})
             except Exception as e:
                 errors.append({'symbol': symbol, 'error': str(e)})
         

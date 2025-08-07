@@ -1526,6 +1526,8 @@ async def get_quote(
     
     try:
         await ensure_tws_connected()
+        from src.modules.tws.connection import tws_connection
+        from ib_async import Stock
         
         # Create contract
         if asset_type == 'STK':
@@ -1619,6 +1621,7 @@ async def get_account_summary() -> Dict[str, Any]:
     
     try:
         await ensure_tws_connected()
+        from src.modules.tws.connection import tws_connection
         
         # Get account values and summary
         account_values = tws_connection.ib.accountValues()
@@ -1808,6 +1811,8 @@ async def get_price_history(
     
     try:
         await ensure_tws_connected()
+        from src.modules.tws.connection import tws_connection
+        from ib_async import Stock
         
         # Create and qualify contract
         contract = Stock(symbol, 'SMART', 'USD')

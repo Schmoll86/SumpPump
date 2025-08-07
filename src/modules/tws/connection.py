@@ -628,14 +628,18 @@ class TWSConnection:
             account_id = config.tws.account
             if not account_id or account_id.strip() == "" or "#" in account_id:
                 logger.info("No valid account ID configured, attempting to detect...")
-                managed_accounts = self.ib.managedAccounts()
-                logger.info(f"Available accounts: {managed_accounts}")
-                if managed_accounts:
-                    account_id = managed_accounts[0]  # Use first available account
-                    logger.info(f"Auto-detected account ID: {account_id}")
-                else:
-                    logger.error("No managed accounts found")
-                    account_id = ""
+                try:
+                    managed_accounts = self.ib.managedAccounts()
+                    logger.info(f"Available accounts: {managed_accounts}")
+                    if managed_accounts:
+                        account_id = managed_accounts[0]  # Use first available account
+                        logger.info(f"Auto-detected account ID: {account_id}")
+                    else:
+                        logger.error("No managed accounts found")
+                        account_id = ""
+                except Exception as e:
+                    logger.warning(f"Could not auto-detect account in async context: {e}")
+                    account_id = "DU0000000"  # Fallback to demo account pattern
             
             # Get account summary - using proper async/await pattern
             logger.debug("Requesting account summary...")

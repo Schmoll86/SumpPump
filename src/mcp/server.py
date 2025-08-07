@@ -706,10 +706,18 @@ async def get_market_depth(
         await ensure_tws_connected()
         
         depth = DepthOfBook(tws_connection)
+        
+        # Safely get depth provider enum
+        try:
+            provider = DepthProvider[config.data.depth_provider.upper()]
+        except KeyError:
+            logger.warning(f"Invalid depth provider '{config.data.depth_provider}', using IEX")
+            provider = DepthProvider.IEX
+        
         order_book = await depth.get_depth(
             symbol=symbol,
             num_levels=min(levels, config.data.max_depth_levels),
-            provider=DepthProvider[config.data.depth_provider],
+            provider=provider,
             smart_depth=config.data.use_smart_depth
         )
         

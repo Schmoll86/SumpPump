@@ -1365,7 +1365,7 @@ async def get_open_orders() -> Dict[str, Any]:
                 'contract': contract_details,
                 'order': order_details,
                 'time_in_force': order.tif,
-                'submit_time': status.lastFillTime if status.lastFillTime else None,
+                'submit_time': None,  # OrderStatus doesn't have lastFillTime
                 'commission': status.commission if status.commission else 0,
                 'parent_id': order.parentId if order.parentId else None
             }
@@ -1481,10 +1481,26 @@ async def close_position(
     try:
         from src.modules.tws.connection import tws_connection
         from src.modules.execution.advanced_orders import close_position as close_position_impl
+        from src.modules.execution.verification import check_tws_health, verify_order_executed
+        
+        # Check TWS health first
+        is_healthy, health_report = await check_tws_health(tws_connection)
+        if not is_healthy:
+            logger.error(f"TWS unhealthy: {health_report['errors']}")
+            return {
+                'status': 'failed',
+                'error': 'TWS_UNHEALTHY',
+                'message': f"TWS connection issues: {', '.join(health_report['errors'])}",
+                'health_report': health_report
+            }
+        
+        # Get initial positions for verification
+        initial_positions = tws_connection.ib.positions()
         
         # Ensure connection
         await tws_connection.ensure_connected()
         
+        # Execute the close order
         result = await close_position_impl(
             tws_connection,
             symbol,
@@ -1494,6 +1510,30 @@ async def close_position(
             limit_price,
             position_id
         )
+        
+        # If order was placed, verify execution
+        if result.get('status') == 'success' and result.get('order_id'):
+            logger.info(f"Verifying close position order {result['order_id']}")
+            
+            verified, verify_msg, verify_details = await verify_order_executed(
+                tws_connection,
+                result['order_id'],
+                symbol,
+                quantity,
+                initial_positions,
+                timeout=10
+            )
+            
+            if verified:
+                result['verified'] = True
+                result['verification_details'] = verify_details
+                logger.info(f"✅ Position close VERIFIED for {symbol}")
+            else:
+                result['verified'] = False
+                result['verification_error'] = verify_msg
+                result['status'] = 'unverified'
+                logger.warning(f"⚠️ Position close NOT VERIFIED for {symbol}: {verify_msg}")
+        
         return result
         
     except Exception as e:
@@ -1990,6 +2030,127 @@ async def buy_to_close_option(
             'error': str(e),
             'status': 'failed',
             'message': 'Buy-to-close order failed. Check position and parameters.'
+        }
+
+
+@mcp.tool(name="trade_direct_close")
+async def direct_close(
+    symbol: str,
+    position_type: str,  # 'call', 'put', 'stock'
+    strike: Optional[float] = None,
+    right: Optional[str] = None,  # 'C' or 'P'
+    quantity: Optional[int] = None,
+    order_type: str = 'MKT',
+    limit_price: Optional[float] = None,
+    confirm_token: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    DIRECT position close with verification. Bypasses problematic layers.
+    Use when standard close_position fails.
+    
+    Args:
+        symbol: Symbol to close
+        position_type: 'call', 'put', or 'stock'
+        strike: Option strike (for options)
+        right: 'C' or 'P' (for options)
+        quantity: Quantity to close (auto-detect if None)
+        order_type: 'MKT' or 'LMT'
+        limit_price: Price for limit orders
+        confirm_token: Must be 'USER_CONFIRMED'
+    
+    Returns:
+        Verified execution result
+    """
+    logger.info(f"DIRECT CLOSE: {symbol} {position_type}")
+    
+    # Safety check
+    if confirm_token != 'USER_CONFIRMED':
+        return {
+            'status': 'blocked',
+            'error': 'CONFIRMATION_REQUIRED',
+            'message': 'Direct close requires confirm_token="USER_CONFIRMED"'
+        }
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.execution.direct_execution import direct_close_position
+        
+        # Coerce types
+        from src.modules.utils import coerce_numeric, coerce_integer
+        
+        strike = coerce_numeric(strike, 'strike') if strike else None
+        quantity = coerce_integer(quantity, 'quantity') if quantity else None
+        limit_price = coerce_numeric(limit_price, 'limit_price') if limit_price else None
+        
+        result = await direct_close_position(
+            tws_connection,
+            symbol,
+            position_type,
+            strike=strike,
+            right=right,
+            quantity=quantity,
+            order_type=order_type,
+            limit_price=limit_price,
+            bypass_safety=False
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Direct close failed: {e}")
+        return {
+            'status': 'failed',
+            'error': str(e),
+            'message': 'Direct close failed. Check TWS connection.'
+        }
+
+
+@mcp.tool(name="trade_emergency_close")
+async def emergency_close_all(
+    symbol: str,
+    confirm_token: str,
+    second_confirmation: str
+) -> Dict[str, Any]:
+    """
+    EMERGENCY: Close ALL positions for a symbol using market orders.
+    Requires double confirmation for safety.
+    
+    Args:
+        symbol: Symbol to close ALL positions
+        confirm_token: Must be 'USER_CONFIRMED'
+        second_confirmation: Must be 'YES_CLOSE_ALL'
+    
+    Returns:
+        Results of all position closes
+    """
+    logger.warning(f"🚨 EMERGENCY CLOSE requested for {symbol}")
+    
+    # Double safety check
+    if confirm_token != 'USER_CONFIRMED' or second_confirmation != 'YES_CLOSE_ALL':
+        return {
+            'status': 'blocked',
+            'error': 'DOUBLE_CONFIRMATION_REQUIRED',
+            'message': 'Emergency close requires both confirm_token="USER_CONFIRMED" and second_confirmation="YES_CLOSE_ALL"'
+        }
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.execution.direct_execution import emergency_market_close
+        
+        result = await emergency_market_close(
+            tws_connection,
+            symbol,
+            force=True
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Emergency close failed: {e}")
+        return {
+            'status': 'failed',
+            'error': str(e),
+            'message': 'Emergency close failed. Manual intervention required.'
         }
 
 

@@ -3,8 +3,8 @@
 ## Project Overview
 SumpPump is an MCP (Model Context Protocol) server that bridges Claude Desktop with Interactive Brokers TWS for conversational options trading. It provides real-time market data access, strategy analysis, and trade execution with mandatory confirmation workflows.
 
-**Current Version**: 2.0 (January 2025)
-**Total MCP Tools**: 37 fully integrated and operational tools
+**Current Version**: 2.0.2 (January 2025)
+**Total MCP Tools**: 39 fully integrated and operational tools
 
 ## Core Architecture Principles
 
@@ -111,9 +111,9 @@ except TWSError as e:
 - Handles partial fills
 - Reports execution status
 
-## MCP Tool Specifications (37 Tools Total)
+## MCP Tool Specifications (39 Tools Total)
 
-### Market Data Tools (10)
+### Market Data Tools (12)
 - `trade_get_quote` - Real-time stock/ETF quotes
 - `trade_get_options_chain` - Full options chain with Greeks
 - `trade_get_price_history` - Historical OHLCV data
@@ -124,6 +124,8 @@ except TWSError as e:
 - `trade_get_watchlist_quotes` - Multiple symbol quotes
 - `trade_get_market_depth` - Level 2 order book
 - `trade_get_depth_analytics` - Price impact analysis
+- `trade_scan_market` - Market scanner for opportunities (high IV, unusual options, momentum)
+- `trade_check_market_data` - Verify market data feed status and subscriptions
 
 ### Strategy & Risk Tools (8)
 - `trade_calculate_strategy` - Analyze options strategies with P&L
@@ -242,6 +244,33 @@ class SessionState:
 4. Connect Claude Desktop
 5. Test with small positions first
 
+## Debugging Commands
+
+### Check MCP Server Status
+```bash
+# View server logs
+tail -f /tmp/mcp_server.log
+
+# Check if server is running
+ps aux | grep server.py
+
+# Restart MCP server
+pkill -f "server.py" && sleep 1
+/Users/schmoll/Desktop/SumpPump/venv/bin/python src/mcp/server.py
+```
+
+### Test Specific Components
+```bash
+# Test strategy persistence
+/Users/schmoll/Desktop/SumpPump/venv/bin/python test_strategy_persistence.py
+
+# Test single option routing
+/Users/schmoll/Desktop/SumpPump/venv/bin/python test_single_option.py
+
+# Test options order fixes
+/Users/schmoll/Desktop/SumpPump/venv/bin/python test_options_order_fixes.py
+```
+
 ## Important Reminders
 
 - **LIVE TRADING ONLY** - No paper trading
@@ -249,6 +278,9 @@ class SessionState:
 - Always calculate max risk
 - Prompt for stops after fills
 - Clear cache between symbols
+- Single options use `place_option_order()` not combo orders
+- Always verify dict vs object types when accessing attributes
+- Use agents for code review before committing changes
 
 ## V2 Architecture Components (January 2025)
 
@@ -259,7 +291,7 @@ class SessionState:
 - **RiskValidationFramework**: Multi-layer risk validation
 - **ExecutionSafety Validator**: Prevents accidental executions
 
-## CRITICAL RECENT FIXES (January 2025 - v2.0)
+## CRITICAL RECENT FIXES (January 2025 - v2.0.2)
 
 ### Event Loop Issues - FULLY RESOLVED
 - Applied `nest_asyncio.apply()` at module start to allow nested event loops
@@ -311,7 +343,57 @@ class SessionState:
 - Stop loss recommendations with logging (not print statements)
 - Session state persistence across tool calls
 
+### Single Option Order Routing - FIXED (January 2025)
+- Single options now route to `place_option_order()` not combo orders
+- Creates proper Option contracts with secType="OPT"
+- Combo orders only used for multi-leg strategies (spreads)
+- File: src/mcp/server.py (lines 793-803), src/modules/tws/connection.py (lines 835-956)
+
+### Dict vs Object Access - RESOLVED (January 2025)
+- Fixed 'dict' object has no attribute 'contract' error
+- Proper type checking with `isinstance(leg_data, dict)`
+- Correct reconstruction of OptionLeg objects from dict data
+- Enhanced enum parsing for OptionRight and OrderAction
+- File: src/mcp/server.py (lines 669-730)
+
+### TWS API Compliance - CORRECTED (January 2025)
+- Orders and Contracts properly separated (no order.contract)
+- Option multiplier explicitly set to '100'
+- Account dynamically loaded from config (no hardcoding)
+- Use openTrades() not openOrders() for order info
+- Files: src/modules/tws/connection.py, src/modules/execution/
+
+### Market Scanner Tools - ADDED (January 2025)
+- New market scanner module for finding opportunities
+- Scans for high IV stocks, unusual options volume, momentum
+- Market overview with indices (SPY, QQQ, IWM, VIX)
+- Files: src/modules/scanner/, src/mcp/server.py (lines 3524-3672)
+
 ## Coding Workflow
 
 ### Code Review Guidelines
-- Use `data_flow_architect` and `python_reviewer` when making changes to more than 2 lines of code
+- Use `data-flow-architect` agent when:
+  - Analyzing data flow through complex systems
+  - Identifying bottlenecks or failure points
+  - Ensuring fault tolerance in data pipelines
+  - Mapping information flow between components
+  
+- Use `python-code-reviewer` agent when:
+  - Reviewing newly written Python functions or modules
+  - Checking for best practices and project standards
+  - After refactoring existing code
+  - Implementing new features or fixing bugs
+
+### Agent Usage Best Practices
+- Launch agents proactively for significant code changes
+- Use agents concurrently when possible for performance
+- Agents are stateless - provide complete context in prompts
+- Trust agent outputs but verify critical changes
+- Clearly specify if expecting code writing vs research
+
+### Testing Workflow
+1. Write code changes
+2. Use `python-code-reviewer` to validate implementation
+3. Use `data-flow-architect` to verify data integrity
+4. Run test scripts to confirm functionality
+5. Restart MCP server to apply changes

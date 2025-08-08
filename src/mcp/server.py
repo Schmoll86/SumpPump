@@ -11,6 +11,8 @@ nest_asyncio.apply()
 
 import asyncio
 import sys
+import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
 from datetime import datetime
@@ -75,8 +77,27 @@ class SessionState:
         self.current_symbol = symbol
         self.last_calculated = datetime.now()
         
+        # Also save to strategy manager if we have a strategy_id
+        if 'strategy_id' in strategy_dict and self.strategy_manager:
+            try:
+                self.strategy_manager.create_strategy(
+                    symbol=symbol,
+                    strategy_type=strategy_dict.get('strategy_type'),
+                    legs=strategy_dict.get('legs', []),
+                    strikes=strategy_dict.get('strikes', []),
+                    expiry=strategy_dict.get('expiry'),
+                    quantity=strategy_dict.get('quantity', 1),
+                    max_loss=strategy_dict.get('max_loss_raw', 0),
+                    max_profit=strategy_dict.get('max_profit_raw', 0),
+                    breakeven=strategy_dict.get('analysis', {}).get('breakeven_points', [])
+                )
+                logger.info(f"[SESSION] Strategy {strategy_dict['strategy_id']} saved to manager")
+            except Exception as e:
+                logger.error(f"[SESSION] Failed to save to strategy manager: {e}")
+        
         # Detailed logging for debugging
         logger.info(f"[SESSION] Saving strategy for {symbol}")
+        logger.info(f"[SESSION] Strategy ID: {strategy_dict.get('strategy_id', 'NO_ID')}")
         logger.info(f"[SESSION] Strategy type: {strategy_dict.get('strategy_type')}")
         logger.info(f"[SESSION] Has legs in dict: {len(strategy_dict.get('legs', [])) > 0}")
         logger.info(f"[SESSION] Strategy object type: {type(strategy_obj).__name__}")
@@ -389,8 +410,35 @@ async def calculate_strategy(
             for i, leg in enumerate(strategy.legs):
                 logger.info(f"[CALC] Leg {i}: {type(leg).__name__} - {leg.action if hasattr(leg, 'action') else 'no action'}")
         
+        # Generate unique strategy ID
+        strategy_id = str(uuid.uuid4())
+        
+        # Properly serialize legs data
+        serialized_legs = []
+        if hasattr(strategy, 'legs'):
+            for leg in strategy.legs:
+                # Convert leg to dict using appropriate method
+                if hasattr(leg, 'to_dict'):
+                    serialized_legs.append(leg.to_dict())
+                elif hasattr(leg, '__dict__'):
+                    # Use asdict for dataclass objects
+                    try:
+                        serialized_legs.append(asdict(leg))
+                    except Exception:
+                        # Fallback - convert to dict manually
+                        serialized_legs.append({
+                            'contract': asdict(leg.contract) if hasattr(leg.contract, '__dict__') else str(leg.contract),
+                            'action': leg.action.value if hasattr(leg.action, 'value') else str(leg.action),
+                            'quantity': leg.quantity if hasattr(leg, 'quantity') else 1
+                        })
+                else:
+                    # Last resort - basic string conversion
+                    logger.warning(f"[CALC] Could not serialize leg: {type(leg).__name__}")
+                    serialized_legs.append(str(leg))
+        
         # Create the strategy dict with all needed info
         strategy_dict = {
+            'strategy_id': strategy_id,  # Add unique ID
             'strategy_type': strategy_type,
             'symbol': symbol,
             'strikes': strikes,
@@ -407,9 +455,9 @@ async def calculate_strategy(
             'level2_compliant': True,
             'timestamp': datetime.now().isoformat(),
             # Add the strategy object data for execution
-            'legs': strategy.legs if hasattr(strategy, 'legs') else [],
+            'legs': serialized_legs,  # Use properly serialized legs
             'name': strategy.name if hasattr(strategy, 'name') else f"{strategy_type} Strategy",
-            'max_profit_raw': max_profit,
+            'max_profit_raw': max_profit if max_profit != float('inf') else None,
             'max_loss_raw': max_loss,
             'required_capital': abs(net_debit_credit)
         }
@@ -592,7 +640,7 @@ async def execute_trade(
         logger.warning(f"EXECUTING TRADE: {pre_execution_display}")
         
         # Build and submit order - construct Strategy object properly
-        from src.models import Strategy as StrategyModel, StrategyType, OptionLeg
+        from src.models import Strategy as StrategyModel, StrategyType, Greeks
         
         # Create Strategy object from the strategy data
         try:
@@ -600,15 +648,15 @@ async def execute_trade(
             strategy_type = StrategyType(strategy.get('strategy_type', 'long_call'))
             
             # Extract legs if they exist
-            legs = strategy.get('legs', [])
-            logger.info(f"[EXEC] Extracted {len(legs)} legs from strategy dict")
+            legs_data = strategy.get('legs', [])
+            logger.info(f"[EXEC] Extracted {len(legs_data)} legs from strategy dict")
             
-            if not legs:
+            if not legs_data:
                 logger.warning(f"[EXEC] No legs in strategy dict, checking saved_strategy object")
                 # Try to get from saved strategy object
                 if saved_strategy and hasattr(saved_strategy, 'legs'):
-                    legs = saved_strategy.legs
-                    logger.info(f"[EXEC] Retrieved {len(legs)} legs from saved strategy object")
+                    legs_data = saved_strategy.legs
+                    logger.info(f"[EXEC] Retrieved {len(legs_data)} legs from saved strategy object")
                 else:
                     logger.error(f"[EXEC] No legs found anywhere - saved_strategy: {saved_strategy is not None}, has legs: {hasattr(saved_strategy, 'legs') if saved_strategy else False}")
                     logger.error(f"[EXEC] Strategy keys: {list(strategy.keys())}")
@@ -617,6 +665,94 @@ async def execute_trade(
                         'message': 'Strategy has no leg information. Please recalculate the strategy.',
                         'required_flow': '1. get_options_chain() → 2. calculate_strategy() → 3. execute_trade()'
                     }
+            
+            # Convert dict legs to OptionLeg objects
+            from src.models import OptionLeg, OptionContract, OptionRight, OrderAction, Greeks
+            legs = []
+            for leg_data in legs_data:
+                # Check if it's already an OptionLeg object (has 'contract' attribute, not key)
+                if hasattr(leg_data, 'contract') and hasattr(leg_data, 'action'):
+                    legs.append(leg_data)
+                    continue
+                    
+                # It's a dict, need to reconstruct from serialized data
+                if isinstance(leg_data, dict):
+                    contract_data = leg_data.get('contract', {})
+                else:
+                    # Unexpected data type
+                    logger.error(f"[EXEC] Unexpected leg_data type: {type(leg_data)}")
+                    continue
+                
+                # Create OptionContract from dict
+                try:
+                    # Parse expiry - handle ISO format and datetime objects
+                    expiry_raw = contract_data.get('expiry')
+                    if isinstance(expiry_raw, str):
+                        # Remove timezone info and parse
+                        expiry = datetime.fromisoformat(expiry_raw.replace('Z', '+00:00').split('T')[0] + 'T00:00:00')
+                    else:
+                        expiry = expiry_raw
+                    
+                    # Parse right - handle string values 'C'/'P' or 'CALL'/'PUT' or enum
+                    right_raw = contract_data.get('right')
+                    if isinstance(right_raw, str):
+                        if right_raw in ['C', 'CALL']:
+                            right = OptionRight.CALL
+                        elif right_raw in ['P', 'PUT']:
+                            right = OptionRight.PUT
+                        else:
+                            right = OptionRight(right_raw)
+                    else:
+                        right = right_raw if right_raw else OptionRight.CALL
+                    
+                    option_contract = OptionContract(
+                        symbol=contract_data.get('symbol', ''),
+                        strike=float(contract_data.get('strike', 0)),
+                        expiry=expiry,
+                        right=right,
+                        bid=float(contract_data.get('bid', 0)),
+                        ask=float(contract_data.get('ask', 0)),
+                        last=float(contract_data.get('last', 0)),
+                        volume=int(contract_data.get('volume', 0)),
+                        open_interest=int(contract_data.get('open_interest', 0)),
+                        iv=float(contract_data.get('iv', 0)),
+                        greeks=Greeks(
+                            delta=float(contract_data.get('greeks', {}).get('delta', 0)),
+                            gamma=float(contract_data.get('greeks', {}).get('gamma', 0)),
+                            theta=float(contract_data.get('greeks', {}).get('theta', 0)),
+                            vega=float(contract_data.get('greeks', {}).get('vega', 0)),
+                            rho=float(contract_data.get('greeks', {}).get('rho', 0)) if contract_data.get('greeks', {}).get('rho') else None
+                        ) if contract_data.get('greeks') else Greeks(delta=0, gamma=0, theta=0, vega=0),
+                        underlying_price=float(contract_data.get('underlying_price', 0))
+                    )
+                    
+                    # Parse action - handle string 'BUY'/'SELL' or enum
+                    action_raw = leg_data.get('action')
+                    if isinstance(action_raw, str):
+                        if action_raw == 'BUY':
+                            action = OrderAction.BUY
+                        elif action_raw == 'SELL':
+                            action = OrderAction.SELL
+                        else:
+                            action = OrderAction(action_raw)
+                    else:
+                        action = action_raw if action_raw else OrderAction.BUY
+                    
+                    # Create OptionLeg
+                    option_leg = OptionLeg(
+                        contract=option_contract,
+                        action=action,
+                        quantity=int(leg_data.get('quantity', 1))
+                    )
+                    legs.append(option_leg)
+                    logger.debug(f"[EXEC] Successfully reconstructed leg: {option_leg.action.value} {option_leg.quantity} {option_contract.symbol} {option_contract.strike}{option_contract.right.value}")
+                    
+                except Exception as e:
+                    logger.error(f"[EXEC] Failed to reconstruct leg from dict: {e}")
+                    logger.error(f"[EXEC] Leg data: {leg_data}")
+                    continue
+            
+            logger.info(f"[EXEC] Reconstructed {len(legs)} OptionLeg objects from dict data")
             
             # Use the raw values if available, otherwise get from analysis section
             max_profit_val = strategy.get('max_profit_raw')
@@ -630,7 +766,7 @@ async def execute_trade(
             strategy_obj = StrategyModel(
                 name=strategy.get('name', f"{strategy_type.value} Strategy"),
                 type=strategy_type,
-                legs=legs,
+                legs=legs,  # Now these are proper OptionLeg objects
                 max_profit=max_profit_val,
                 max_loss=max_loss_val,
                 breakeven=breakeven_val,
@@ -653,8 +789,18 @@ async def execute_trade(
             confirm_token
         )
         
-        # Submit order through TWS
-        result = await tws_connection.place_combo_order(strategy_obj)
+        # Submit order through TWS - route based on number of legs
+        if len(strategy_obj.legs) == 1:
+            # Single option order (long call or long put)
+            logger.info(f"Routing single option order for {strategy_obj.name}")
+            result = await tws_connection.place_option_order(
+                strategy_obj.legs[0],  # Pass the single leg
+                order_type='MKT'  # Use market order by default for single options
+            )
+        else:
+            # Multi-leg strategy (spreads, straddles, etc.)
+            logger.info(f"Routing combo order for {strategy_obj.name} with {len(strategy_obj.legs)} legs")
+            result = await tws_connection.place_combo_order(strategy_obj)
         
         # MANDATORY: Prompt for stop loss
         stop_loss_prompt = {
@@ -3040,30 +3186,53 @@ async def execute_with_verification(
         managed_strategy = None
         
         if strategy_id:
+            logger.info(f"[EXECUTE_V2] Looking for strategy_id: {strategy_id}")
             managed_strategy = session_state.strategy_manager.get_strategy(strategy_id)
             if managed_strategy:
+                logger.info(f"[EXECUTE_V2] Found managed strategy for {managed_strategy.symbol}")
                 strategy = {
                     'strategy_type': managed_strategy.strategy_type,
                     'symbol': managed_strategy.symbol,
                     'legs': managed_strategy.legs,
                     'strikes': managed_strategy.strikes,
-                    'quantity': managed_strategy.quantity
+                    'quantity': managed_strategy.quantity,
+                    'max_loss_raw': managed_strategy.max_loss,
+                    'max_profit_raw': managed_strategy.max_profit,
+                    'analysis': {
+                        'breakeven_points': managed_strategy.breakeven
+                    }
                 }
+            else:
+                logger.warning(f"[EXECUTE_V2] No managed strategy found for ID: {strategy_id}")
         elif symbol:
             # Try session state
+            logger.info(f"[EXECUTE_V2] Looking for strategy by symbol: {symbol}")
             _, strategy = session_state.get_strategy()
+            if strategy:
+                logger.info(f"[EXECUTE_V2] Found session strategy for {strategy.get('symbol')}")
+        else:
+            # Try to get any strategy from session
+            logger.info(f"[EXECUTE_V2] No strategy_id or symbol provided, checking session")
+            _, strategy = session_state.get_strategy()
+            if strategy:
+                logger.info(f"[EXECUTE_V2] Found session strategy: {strategy.get('strategy_type')} for {strategy.get('symbol')}")
         
         if not strategy:
+            # Log what we have in session for debugging
+            logger.error(f"[EXECUTE_V2] NO_STRATEGY - Session state ID: {id(session_state)}")
+            logger.error(f"[EXECUTE_V2] Current strategy dict: {session_state.current_strategy_dict is not None}")
+            logger.error(f"[EXECUTE_V2] Strategy manager has {len(session_state.strategy_manager.active_strategies)} active strategies")
             return {
                 'status': 'failed',
                 'error': 'NO_STRATEGY',
-                'message': 'No strategy found. Run trade_analyze_opportunity first.'
+                'message': 'No strategy found. Calculate a strategy first using trade_calculate_strategy.',
+                'hint': 'Strategy must be calculated in the same session. Use trade_calculate_strategy first.'
             }
         
         # Execute using existing trade_execute
-        exec_result = await execute(
-            strategy=strategy,
-            confirm_token='USER_CONFIRMED'
+        exec_result = await execute_trade(
+            confirm_token='USER_CONFIRMED',
+            strategy=strategy
         )
         
         if exec_result.get('status') != 'success':
@@ -3350,6 +3519,170 @@ async def modify_for_extended(
             'status': 'failed',
             'error': str(e),
             'order_id': order_id
+        }
+
+
+# MCP Tool: Market Scanner
+@mcp.tool(name="trade_scan_market")
+async def scan_market(
+    scan_type: str = "high_iv",
+    min_iv_rank: Optional[float] = 50,
+    min_volume_ratio: Optional[float] = 2.0,
+    min_change_pct: Optional[float] = 3.0,
+    symbols: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """
+    [TRADING] Scan market for trading opportunities.
+    
+    Args:
+        scan_type: Type of scan ('high_iv', 'unusual_options', 'momentum', 'opportunities', 'overview')
+        min_iv_rank: Minimum IV rank for high_iv scan
+        min_volume_ratio: Minimum volume/OI ratio for unusual options
+        min_change_pct: Minimum % change for momentum scan
+        symbols: List of symbols for opportunities scan
+        
+    Returns:
+        Scan results based on type
+    """
+    logger.info(f"[SCANNER] Running {scan_type} market scan")
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        from src.modules.scanner import MarketScanner
+        
+        scanner = MarketScanner(tws_connection)
+        
+        if scan_type == "high_iv":
+            results = await scanner.scan_high_iv_stocks(min_iv_rank or 50)
+            return {
+                'scan_type': 'high_iv',
+                'min_iv_rank': min_iv_rank,
+                'results': results,
+                'count': len(results)
+            }
+            
+        elif scan_type == "unusual_options":
+            results = await scanner.scan_unusual_options_volume(min_volume_ratio or 2.0)
+            return {
+                'scan_type': 'unusual_options',
+                'min_volume_ratio': min_volume_ratio,
+                'results': results,
+                'count': len(results)
+            }
+            
+        elif scan_type == "momentum":
+            results = await scanner.scan_momentum_stocks(min_change_pct or 3.0)
+            return {
+                'scan_type': 'momentum',
+                'min_change_pct': min_change_pct,
+                'results': results,
+                'count': len(results)
+            }
+            
+        elif scan_type == "opportunities":
+            if not symbols:
+                symbols = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA']  # Default watchlist
+            results = await scanner.scan_options_opportunities(symbols)
+            return {
+                'scan_type': 'opportunities',
+                'symbols': symbols,
+                'results': results,
+                'count': len(results)
+            }
+            
+        elif scan_type == "overview":
+            overview = await scanner.get_market_overview()
+            return {
+                'scan_type': 'overview',
+                'market_data': overview,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+        else:
+            return {
+                'error': f'Unknown scan type: {scan_type}',
+                'valid_types': ['high_iv', 'unusual_options', 'momentum', 'opportunities', 'overview']
+            }
+            
+    except Exception as e:
+        logger.error(f"[SCANNER] Market scan failed: {e}")
+        return {
+            'status': 'failed',
+            'error': str(e),
+            'scan_type': scan_type
+        }
+
+
+# MCP Tool: Get Market Data Feed Status
+@mcp.tool(name="trade_check_market_data")
+async def check_market_data() -> Dict[str, Any]:
+    """
+    [TRADING] Check market data feed status and subscriptions.
+    
+    Returns:
+        Market data status and subscription info
+    """
+    logger.info("[MARKET_DATA] Checking market data feed status")
+    
+    try:
+        from src.modules.tws.connection import tws_connection
+        
+        if not tws_connection.connected:
+            await tws_connection.connect()
+            
+        ib = tws_connection.ib
+        
+        # Test market data with multiple symbols
+        test_symbols = ['SPY', 'AAPL', 'NVDA']
+        results = {}
+        
+        for symbol in test_symbols:
+            from ib_async import Stock
+            stock = Stock(symbol, 'SMART', 'USD')
+            
+            # Qualify contract first
+            qualified = await ib.qualifyContractsAsync(stock)
+            if qualified:
+                stock = qualified[0]
+                
+                ticker = ib.reqMktData(stock, snapshot=True)
+                await asyncio.sleep(2)
+                
+                results[symbol] = {
+                    'bid': ticker.bid,
+                    'ask': ticker.ask,
+                    'last': ticker.last,
+                    'volume': ticker.volume,
+                    'status': 'OK' if ticker.bid > 0 and ticker.ask > 0 else 'NO_DATA'
+                }
+                
+                ib.cancelMktData(stock)
+            else:
+                results[symbol] = {
+                    'status': 'CANNOT_QUALIFY',
+                    'error': 'Contract could not be qualified'
+                }
+        
+        # Check overall status
+        working_feeds = sum(1 for r in results.values() if r.get('status') == 'OK')
+        
+        return {
+            'connected': tws_connection.connected,
+            'account': ib.managedAccounts()[0] if ib.managedAccounts() else None,
+            'market_data_type': 'LIVE' if working_feeds > 0 else 'DELAYED_OR_NONE',
+            'test_results': results,
+            'working_feeds': working_feeds,
+            'total_tested': len(test_symbols),
+            'status': 'OK' if working_feeds == len(test_symbols) else 'PARTIAL' if working_feeds > 0 else 'FAILED',
+            'timestamp': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"[MARKET_DATA] Check failed: {e}")
+        return {
+            'status': 'error',
+            'error': str(e),
+            'connected': False
         }
 
 

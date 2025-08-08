@@ -1,10 +1,10 @@
 # SumpPump - IBKR Trading Assistant
 
-Production-ready MCP (Model Context Protocol) server that bridges Claude Desktop with Interactive Brokers TWS for conversational options trading and market analysis. All 37 trading tools are fully integrated and operational with V2 architecture.
+Production-ready MCP (Model Context Protocol) server that bridges Claude Desktop with Interactive Brokers TWS for conversational options trading and market analysis. All 39 trading tools are fully integrated and operational with V2 architecture, including market scanning capabilities.
 
-## ✅ Current Status (v2.0 - January 2025)
+## ✅ Current Status (v2.0.2 - January 2025)
 
-- **37 MCP Tools**: Fully integrated and operational
+- **39 MCP Tools**: Fully integrated and operational (including new market scanners)
 - **Live Trading**: Production-ready with real money trading
 - **TWS Integration**: Complete with auto-reconnection and event loop fixes
 - **Risk Management**: Mandatory confirmation workflows
@@ -22,7 +22,7 @@ Production-ready MCP (Model Context Protocol) server that bridges Claude Desktop
 - **Trade Execution**: Place orders with mandatory confirmation workflow
 - **Risk Management**: Position sizing, stop-loss prompts, max loss calculations
 
-### Working MCP Tools (37 Total)
+### Working MCP Tools (39 Total)
 
 #### Market Data (10 tools)
 - `trade_get_quote` - Real-time stock/ETF quotes
@@ -35,6 +35,8 @@ Production-ready MCP (Model Context Protocol) server that bridges Claude Desktop
 - `trade_get_watchlist_quotes` - Multiple symbol quotes
 - `trade_get_market_depth` - Level 2 order book
 - `trade_get_depth_analytics` - Price impact analysis
+- `trade_scan_market` - Scan for high IV, unusual options, momentum stocks
+- `trade_check_market_data` - Verify market data feed status
 
 #### Strategy & Risk (8 tools)
 - `trade_calculate_strategy` - Analyze options strategies

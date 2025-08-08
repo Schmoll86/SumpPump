@@ -152,8 +152,9 @@ async def direct_close_position(
                 'message': f'Order type must be MKT or LMT, got {order_type}'
             }
         
-        # CRITICAL FIX: Add explicit account and time_in_force
-        order.account = "U16348403"
+        # Add account and time_in_force
+        # Get account from tws_connection or fallback
+        order.account = getattr(tws_connection, 'account_id', "U16348403")
         order.tif = "GTC"  # Good Till Cancelled
         order.transmit = True  # Transmit order immediately
         

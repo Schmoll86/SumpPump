@@ -273,7 +273,10 @@ class TWSConnection:
         Returns:
             Option contract object
         """
-        return Option(symbol, expiry, strike, right, exchange, currency='USD')
+        # Create option with explicit multiplier for standard options
+        option = Option(symbol, expiry, strike, right, exchange, currency='USD')
+        option.multiplier = '100'  # Standard option multiplier
+        return option
     
     async def get_options_chain(
         self, 
@@ -560,11 +563,11 @@ class TWSConnection:
             positions = self.ib.positions()
             logger.info(f"Retrieved {len(positions)} positions")
             
-            # Get open orders  
+            # Get open orders (use openTrades to get both order and contract info)
             self.ib.reqOpenOrders()
             time.sleep(1)  # Wait for data synchronously
-            open_orders = self.ib.openOrders()
-            logger.info(f"Retrieved {len(open_orders)} open orders")
+            open_trades = self.ib.openTrades()
+            logger.info(f"Retrieved {len(open_trades)} open orders")
             
             # Initialize account info with detected account ID
             account_info = {
@@ -596,15 +599,15 @@ class TWSConnection:
                     'contract': str(pos.contract)
                 })
             
-            # Parse open orders
-            for order in open_orders:
+            # Parse open orders (now using Trade objects)
+            for trade in open_trades:
                 account_info['open_orders'].append({
-                    'order_id': order.orderId,
-                    'symbol': order.contract.symbol,
-                    'action': order.action,
-                    'quantity': order.totalQuantity,
-                    'order_type': order.orderType,
-                    'status': order.status
+                    'order_id': trade.order.orderId,
+                    'symbol': trade.contract.symbol,
+                    'action': trade.order.action,
+                    'quantity': trade.order.totalQuantity,
+                    'order_type': trade.order.orderType,
+                    'status': trade.orderStatus.status
                 })
             
             logger.info(f"Account info: NetLiq=${account_info['net_liquidation']:,.2f}, "
@@ -699,11 +702,11 @@ class TWSConnection:
             positions = self.ib.positions()
             logger.info(f"Retrieved {len(positions)} positions")
             
-            # Get open orders  
+            # Get open orders (use openTrades to get both order and contract info)
             self.ib.reqOpenOrders()
             await _async_safe_sleep(1)  # Wait for order data
-            open_orders = self.ib.openOrders()
-            logger.info(f"Retrieved {len(open_orders)} open orders")
+            open_trades = self.ib.openTrades()
+            logger.info(f"Retrieved {len(open_trades)} open orders")
             
             # Initialize account info with detected account ID
             account_info = {
@@ -735,15 +738,15 @@ class TWSConnection:
                     'contract': str(pos.contract)
                 })
             
-            # Parse open orders
-            for order in open_orders:
+            # Parse open orders (now using Trade objects)
+            for trade in open_trades:
                 account_info['open_orders'].append({
-                    'order_id': order.orderId,
-                    'symbol': order.contract.symbol,
-                    'action': order.action,
-                    'quantity': order.totalQuantity,
-                    'order_type': order.orderType,
-                    'status': order.status
+                    'order_id': trade.order.orderId,
+                    'symbol': trade.contract.symbol,
+                    'action': trade.order.action,
+                    'quantity': trade.order.totalQuantity,
+                    'order_type': trade.order.orderType,
+                    'status': trade.orderStatus.status
                 })
             
             logger.info(f"Account info: NetLiq=${account_info['net_liquidation']:,.2f}, "
@@ -798,7 +801,7 @@ class TWSConnection:
                 raise ValueError(f"Unsupported order type: {order_type}")
             
             # CRITICAL FIX: Add explicit account and time_in_force
-            order.account = "U16348403"
+            order.account = config.tws.account if config.tws.account else self.account_id
             order.tif = "GTC"  # Good Till Cancelled
             
             # Add SMART routing for price improvement on all orders
@@ -829,12 +832,135 @@ class TWSConnection:
             logger.error(f"Error placing stock order for {symbol}: {e}")
             raise TWSConnectionError(f"Failed to place stock order: {e}")
 
-    async def place_combo_order(self, strategy: Strategy, order_type: str = 'MKT') -> Dict[str, Any]:
+    async def place_option_order(self, leg, order_type: str = 'MKT', limit_price: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Place a single option order (for long calls/puts).
+        
+        Args:
+            leg: Single OptionLeg object containing contract, action, and quantity
+            order_type: 'MKT' for market, 'LMT' for limit
+            limit_price: Limit price for the order (optional, uses mid if not provided)
+        
+        Returns:
+            Order placement result
+        """
+        try:
+            await self.ensure_connected()
+            
+            # Extract leg information
+            if hasattr(leg, 'contract'):
+                # It's an OptionLeg object
+                symbol = leg.contract.symbol
+                expiry = leg.contract.expiry.strftime('%Y%m%d')
+                strike = leg.contract.strike
+                right = leg.contract.right.value if hasattr(leg.contract.right, 'value') else leg.contract.right
+                action = leg.action.value if hasattr(leg.action, 'value') else leg.action
+                quantity = leg.quantity
+                bid = leg.contract.bid if hasattr(leg.contract, 'bid') else 0
+                ask = leg.contract.ask if hasattr(leg.contract, 'ask') else 0
+            else:
+                # It's a dict (backward compatibility)
+                contract_data = leg.get('contract', {})
+                symbol = contract_data.get('symbol', '')
+                expiry = contract_data.get('expiry', '')
+                if isinstance(expiry, str):
+                    from datetime import datetime
+                    expiry = datetime.fromisoformat(expiry.replace('Z', '+00:00')).strftime('%Y%m%d')
+                elif hasattr(expiry, 'strftime'):
+                    expiry = expiry.strftime('%Y%m%d')
+                strike = float(contract_data.get('strike', 0))
+                right = contract_data.get('right', 'C')
+                if hasattr(right, 'value'):
+                    right = right.value
+                action = leg.get('action', 'BUY')
+                if hasattr(action, 'value'):
+                    action = action.value
+                quantity = int(leg.get('quantity', 1))
+                bid = float(contract_data.get('bid', 0))
+                ask = float(contract_data.get('ask', 0))
+            
+            # Ensure right is single character
+            if right in ['CALL', 'Call']:
+                right = 'C'
+            elif right in ['PUT', 'Put']:
+                right = 'P'
+            
+            # Create the option contract
+            option_contract = self.create_option_contract(
+                symbol,
+                expiry,
+                strike,
+                right,
+                'SMART'
+            )
+            
+            # Qualify the contract
+            qualified = await self.ib.qualifyContractsAsync(option_contract)
+            if qualified:
+                option_contract = qualified[0]
+                logger.info(f"Qualified option contract: {symbol} {strike}{right} {expiry}")
+            else:
+                logger.warning(f"Could not qualify option contract: {symbol} {strike}{right} {expiry}")
+            
+            # Create order
+            if order_type == 'MKT':
+                order = MarketOrder(action, quantity)
+                logger.info(f"Creating market order: {action} {quantity} contracts")
+            else:
+                # For limit orders, use provided price or calculate from bid/ask
+                if limit_price is None:
+                    if bid > 0 and ask > 0:
+                        # Use slightly aggressive pricing for better fill
+                        if action == 'BUY':
+                            limit_price = bid + (ask - bid) * 0.6  # 60% toward ask for buys
+                        else:
+                            limit_price = ask - (ask - bid) * 0.6  # 60% toward bid for sells
+                    else:
+                        raise ValueError("Limit price required for limit orders when bid/ask not available")
+                
+                # Round to 2 decimal places for options
+                limit_price = round(limit_price, 2)
+                order = LimitOrder(action, quantity, limit_price)
+                logger.info(f"Creating limit order: {action} {quantity} contracts at ${limit_price}")
+            
+            # Set account and time in force
+            order.account = config.tws.account if config.tws.account else self.account_id
+            order.tif = "GTC"  # Good Till Cancelled
+            
+            # Add SMART routing for price improvement
+            from ib_async import TagValue
+            order.smartComboRoutingParams = [
+                TagValue("NonGuaranteed", "1")  # Enable immediate price improvement
+            ]
+            
+            # Place the order
+            trade = self.ib.placeOrder(option_contract, order)
+            logger.info(f"Placed single option order: {action} {quantity} {symbol} {strike}{right} {expiry}")
+            
+            # Wait for order to be acknowledged
+            await asyncio.sleep(2)
+            
+            return {
+                'order_id': trade.order.orderId,
+                'status': trade.orderStatus.status if hasattr(trade, 'orderStatus') else 'Submitted',
+                'contract': f"{symbol} {strike}{right} {expiry}",
+                'action': action,
+                'quantity': quantity,
+                'order_type': order_type,
+                'limit_price': limit_price if order_type == 'LMT' else None,
+                'message': f"Single option order placed: {action} {quantity} {symbol} {strike}{right}"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error placing single option order: {e}")
+            raise TWSConnectionError(f"Failed to place option order: {e}")
+
+    async def place_combo_order(self, strategy, order_type: str = 'MKT') -> Dict[str, Any]:
         """
         Place a combo order for an options strategy.
         
         Args:
-            strategy: Strategy object with legs
+            strategy: Strategy object with legs (or dict for backward compatibility)
             order_type: 'MKT' for market, 'LMT' for limit
         
         Returns:
@@ -843,21 +969,78 @@ class TWSConnection:
         try:
             await self.ensure_connected()
             
+            # Handle both Strategy objects and dicts for backward compatibility
+            if isinstance(strategy, dict):
+                # If it's a dict, extract the necessary fields
+                strategy_legs = strategy.get('legs', [])
+                strategy_name = strategy.get('name', 'Options Strategy')
+                strategy_max_loss = strategy.get('max_loss_raw', strategy.get('analysis', {}).get('max_loss', 0))
+                strategy_max_profit = strategy.get('max_profit_raw', strategy.get('analysis', {}).get('max_profit', 0))
+                # Get symbol from first leg
+                if strategy_legs and isinstance(strategy_legs[0], dict):
+                    symbol = strategy_legs[0].get('contract', {}).get('symbol', '')
+                else:
+                    symbol = ''
+                logger.warning(f"place_combo_order received dict instead of Strategy object - converting")
+            else:
+                # It's a Strategy object
+                strategy_legs = strategy.legs
+                strategy_name = strategy.name if hasattr(strategy, 'name') else 'Options Strategy'
+                strategy_max_loss = strategy.max_loss if hasattr(strategy, 'max_loss') else 0
+                strategy_max_profit = strategy.max_profit if hasattr(strategy, 'max_profit') else 0
+                # Get symbol from first leg
+                if strategy_legs and hasattr(strategy_legs[0], 'contract'):
+                    symbol = strategy_legs[0].contract.symbol
+                else:
+                    symbol = ''
+            
+            if not strategy_legs:
+                raise TWSConnectionError("Strategy has no legs")
+            
             # Create combo contract
             combo = Contract()
-            combo.symbol = strategy.legs[0].contract.symbol
+            combo.symbol = symbol
             combo.secType = 'BAG'
             combo.currency = 'USD'
             combo.exchange = 'SMART'
             
             combo_legs = []
-            for leg in strategy.legs:
+            for leg in strategy_legs:
+                # Handle both OptionLeg objects and dict legs
+                if isinstance(leg, dict):
+                    # Extract from dict
+                    contract_data = leg.get('contract', {})
+                    leg_symbol = contract_data.get('symbol', '')
+                    leg_expiry = contract_data.get('expiry', '')
+                    if isinstance(leg_expiry, str):
+                        # Parse ISO format and convert to YYYYMMDD
+                        from datetime import datetime
+                        leg_expiry = datetime.fromisoformat(leg_expiry.replace('Z', '+00:00')).strftime('%Y%m%d')
+                    elif hasattr(leg_expiry, 'strftime'):
+                        leg_expiry = leg_expiry.strftime('%Y%m%d')
+                    leg_strike = float(contract_data.get('strike', 0))
+                    leg_right = contract_data.get('right', 'C')
+                    if hasattr(leg_right, 'value'):
+                        leg_right = leg_right.value
+                    leg_action = leg.get('action', 'BUY')
+                    if hasattr(leg_action, 'value'):
+                        leg_action = leg_action.value
+                    leg_quantity = int(leg.get('quantity', 1))
+                else:
+                    # It's an OptionLeg object
+                    leg_symbol = leg.contract.symbol
+                    leg_expiry = leg.contract.expiry.strftime('%Y%m%d')
+                    leg_strike = leg.contract.strike
+                    leg_right = leg.contract.right.value if hasattr(leg.contract.right, 'value') else leg.contract.right
+                    leg_action = leg.action.value if hasattr(leg.action, 'value') else leg.action
+                    leg_quantity = leg.quantity
+                
                 # Create the actual IB contract for this leg
                 ib_contract = self.create_option_contract(
-                    leg.contract.symbol,
-                    leg.contract.expiry.strftime('%Y%m%d'),
-                    leg.contract.strike,
-                    leg.contract.right.value,
+                    leg_symbol,
+                    leg_expiry,
+                    leg_strike,
+                    leg_right,
                     'SMART'
                 )
                 
@@ -869,8 +1052,8 @@ class TWSConnection:
                 # Create combo leg
                 combo_leg = ComboLeg()
                 combo_leg.conId = ib_contract.conId
-                combo_leg.ratio = leg.quantity
-                combo_leg.action = leg.action.value
+                combo_leg.ratio = leg_quantity
+                combo_leg.action = leg_action
                 combo_leg.exchange = 'SMART'
                 
                 combo_legs.append(combo_leg)
@@ -889,18 +1072,26 @@ class TWSConnection:
                 if isinstance(strategy, BaseStrategy):
                     # BaseStrategy with async method
                     net_debit_credit = await strategy.calculate_net_debit_credit()
-                elif isinstance(strategy, Strategy):
+                elif hasattr(strategy, 'net_debit_credit'):
                     # Strategy dataclass with property
                     net_debit_credit = strategy.net_debit_credit
+                elif isinstance(strategy, dict):
+                    # Dict strategy - get from stored values
+                    net_debit_credit = strategy.get('required_capital', 0)
+                    if net_debit_credit == 0:
+                        net_debit_credit = strategy.get('analysis', {}).get('net_debit', 0)
                 else:
                     # Fallback - calculate from legs
-                    net_debit_credit = sum(leg.cost for leg in strategy.legs) if hasattr(strategy, 'legs') and strategy.legs else 0
+                    if hasattr(strategy, 'legs') and strategy.legs:
+                        net_debit_credit = sum(leg.cost for leg in strategy.legs if hasattr(leg, 'cost')) 
+                    else:
+                        net_debit_credit = 0
                     
                 limit_price = abs(net_debit_credit)
                 order = LimitOrder('BUY', 1, limit_price)
             
             # CRITICAL FIX: Add explicit account and time_in_force
-            order.account = "U16348403"
+            order.account = config.tws.account if config.tws.account else self.account_id
             order.tif = "GTC"  # Good Till Cancelled
             
             # Add SMART routing for price improvement (NonGuaranteed for immediate execution)
@@ -914,7 +1105,7 @@ class TWSConnection:
             
             # Place the order with native spread execution
             trade = self.ib.placeOrder(combo, order)
-            logger.info(f"Placed native spread order (BAG) for {strategy.name if hasattr(strategy, 'name') else 'combo'} with SMART routing")
+            logger.info(f"Placed native spread order (BAG) for {strategy_name} with SMART routing")
             
             # Wait for order to be acknowledged
             await asyncio.sleep(2)
@@ -922,9 +1113,9 @@ class TWSConnection:
             return {
                 'order_id': trade.order.orderId,
                 'status': trade.orderStatus.status if hasattr(trade, 'orderStatus') else 'Submitted',
-                'strategy': strategy.name if hasattr(strategy, 'name') else 'Options Strategy',
-                'max_loss': strategy.max_loss if hasattr(strategy, 'max_loss') else 0,
-                'max_profit': strategy.max_profit if hasattr(strategy, 'max_profit') else 0
+                'strategy': strategy_name,
+                'max_loss': strategy_max_loss,
+                'max_profit': strategy_max_profit
             }
             
         except Exception as e:
@@ -983,7 +1174,7 @@ class TWSConnection:
             parent_order.transmit = False  # Don't transmit until bracket is complete
             parent_order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
             # CRITICAL FIX: Add explicit account and time_in_force
-            parent_order.account = "U16348403"
+            parent_order.account = config.tws.account if config.tws.account else self.account_id
             parent_order.tif = "GTC"  # Good Till Cancelled
             
             # Place parent order
@@ -999,7 +1190,7 @@ class TWSConnection:
             stop_order.parentId = parent_id
             stop_order.transmit = False
             # CRITICAL FIX: Add explicit account and time_in_force
-            stop_order.account = "U16348403"
+            stop_order.account = config.tws.account if config.tws.account else self.account_id
             stop_order.tif = "GTC"  # Good Till Cancelled
             
             # Place stop loss
@@ -1011,7 +1202,7 @@ class TWSConnection:
             profit_order.transmit = True  # Transmit all orders now
             profit_order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
             # CRITICAL FIX: Add explicit account and time_in_force
-            profit_order.account = "U16348403"
+            profit_order.account = config.tws.account if config.tws.account else self.account_id
             profit_order.tif = "GTC"  # Good Till Cancelled
             
             # Place profit target (this transmits all three)

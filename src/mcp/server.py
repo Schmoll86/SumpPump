@@ -493,14 +493,28 @@ async def execute_trade(
     strategy: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    [TRADING] Execute live trades through IBKR TWS.
-    REAL MONEY - Requires explicit confirmation. Not a simulation.
+    [EXECUTION - REAL MONEY] Execute calculated strategy with standard safety.
     
-    CRITICAL: 
-    - Requires explicit confirmation token "USER_CONFIRMED"
-    - Only Level 2 strategies allowed (debit spreads, long options)
-    - Will display MAX LOSS before execution
-    - Will prompt for STOP LOSS after fill
+    PRIMARY USE: Execute trades after strategy calculation and risk review.
+    
+    USE WHEN USER SAYS:
+    ✓ "Execute the trade"
+    ✓ "Place the order"
+    ✓ "Buy the calls/puts"
+    ✓ "Open the position"
+    ✓ "Yes, do it" (after strategy shown)
+    
+    DO NOT USE WHEN:
+    ✗ User wants extra verification → use trade_execute_with_verification
+    ✗ Closing positions → use trade_close_position
+    ✗ User hasn't seen strategy details yet
+    ✗ User hasn't explicitly confirmed
+    
+    WORKFLOW:
+    1. User asks to analyze strategy → trade_calculate_strategy
+    2. Show max loss and details
+    3. User confirms → THIS TOOL
+    4. After fill → prompt for stop loss
     
     Args:
         confirm_token: Must be exactly "USER_CONFIRMED"
@@ -508,6 +522,8 @@ async def execute_trade(
     
     Returns:
         Execution status, fill details, and stop loss prompt
+    
+    SAFETY: Standard confirmation required. Real money trades.
     """
     logger.warning(f"Trade execution requested with token: {confirm_token}")
     
@@ -1385,11 +1401,29 @@ async def get_vix_term_structure() -> List[Dict[str, Any]]:
 @mcp.tool(name="trade_get_positions")
 async def get_my_positions() -> Dict[str, Any]:
     """
-    [TRADING] Get all IBKR positions with P&L.
-    Investment portfolio positions, not file positions.
+    [PORTFOLIO] List individual positions with details.
+    
+    PRIMARY USE: See each position separately with quantity and P&L.
+    
+    USE WHEN USER SAYS:
+    ✓ "Show my positions"
+    ✓ "What am I holding?"
+    ✓ "List my trades"
+    ✓ "What options do I own?"
+    ✓ "Show each position"
+    
+    DO NOT USE WHEN:
+    ✗ Total portfolio value needed → use trade_get_portfolio_summary
+    ✗ Account balance → use trade_get_account_summary
+    ✗ Aggregate Greeks → use trade_analyze_greeks
+    ✗ Open orders (not filled) → use trade_get_open_orders
     
     Returns:
-        Dict containing all positions with unrealized P&L, market values, and Greeks
+        List of individual positions with:
+        - Symbol, quantity, avg cost
+        - Current price and P&L
+        - Greeks for options
+        - Position-level details
     """
     logger.info("Fetching current positions")
     
@@ -1613,8 +1647,21 @@ async def close_position(
     confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    [TRADING] Close IBKR trading positions.
-    Sell investments to exit trades, not closing files.
+    [TRADING] Standard position close with safety confirmations.
+    
+    PRIMARY USE: Close any trading position (stocks, options, spreads) with normal safety checks.
+    
+    USE WHEN USER SAYS:
+    ✓ "Close my SPY position"
+    ✓ "Exit my trade"
+    ✓ "Sell my calls/puts"
+    ✓ "Close my spread"
+    ✓ "Get out of this position"
+    
+    DO NOT USE WHEN:
+    ✗ "Buy to close" (options specific) → use trade_buy_to_close
+    ✗ "Emergency close all" → use trade_emergency_close
+    ✗ "Close without confirmation" → use trade_direct_close (dangerous!)
     
     Args:
         symbol: Symbol of the position to close
@@ -1623,9 +1670,12 @@ async def close_position(
         order_type: Market or limit order
         limit_price: Price for limit orders (accepts float, int, or string)
         position_id: Optional specific position ID to close
+        confirm_token: Required for safety
     
     Returns:
-        Order execution result
+        Order execution result with fill details
+    
+    SAFETY: Requires confirmation token. Use this for normal closes.
     """
     logger.info(f"Closing {position_type} position for {symbol}")
     
@@ -2089,8 +2139,23 @@ async def buy_to_close_option(
     confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Create a buy-to-close order for a short option position.
-    This closes short calls or puts to reduce risk.
+    [OPTIONS SPECIFIC] Buy to close SHORT option positions.
+    
+    PRIMARY USE: Close short options (sold calls/puts) by buying them back.
+    
+    USE WHEN USER SAYS:
+    ✓ "Buy to close my short calls"
+    ✓ "Cover my short puts"
+    ✓ "Close my sold options"
+    ✓ "Buy back my written calls/puts"
+    
+    DO NOT USE WHEN:
+    ✗ "Close my long options" → use trade_close_position
+    ✗ "Sell my calls/puts" → use trade_close_position
+    ✗ "Close stock position" → use trade_close_position
+    
+    IMPORTANT: This is ONLY for closing SHORT options (options you sold/wrote).
+    For LONG options (options you bought), use trade_close_position.
     
     Args:
         symbol: Underlying symbol
@@ -2251,8 +2316,22 @@ async def direct_close(
     confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    DIRECT position close with verification. Bypasses problematic layers.
-    Use when standard close_position fails.
+    [TROUBLESHOOTING] Direct close when standard methods fail.
+    
+    PRIMARY USE: Fallback method when trade_close_position encounters errors.
+    
+    USE WHEN USER SAYS:
+    ✓ "Force close my position"
+    ✓ "Standard close isn't working"
+    ✓ "Skip the normal process and close"
+    ✓ "I'm getting errors trying to close"
+    
+    DO NOT USE WHEN:
+    ✗ Normal closing works → use trade_close_position
+    ✗ Emergency/panic close → use trade_emergency_close
+    ✗ First attempt to close → always try trade_close_position first
+    
+    WARNING: Bypasses some safety checks. Only use if standard close fails.
     
     Args:
         symbol: Symbol to close
@@ -2266,6 +2345,8 @@ async def direct_close(
     
     Returns:
         Verified execution result
+    
+    SAFETY: Still requires confirmation but skips some validation layers.
     """
     logger.info(f"DIRECT CLOSE: {symbol} {position_type}")
     
@@ -2318,8 +2399,23 @@ async def emergency_close_all(
     second_confirmation: str
 ) -> Dict[str, Any]:
     """
-    EMERGENCY: Close ALL positions for a symbol using market orders.
-    Requires double confirmation for safety.
+    [EMERGENCY ONLY] Panic close ALL positions for a symbol immediately.
+    
+    PRIMARY USE: Emergency exit when market is moving against you rapidly.
+    
+    USE WHEN USER SAYS:
+    ✓ "EMERGENCY - close everything now"
+    ✓ "Panic close all SPY"
+    ✓ "Get me out of everything immediately"
+    ✓ "Market crash - close all positions"
+    
+    DO NOT USE WHEN:
+    ✗ Normal position close → use trade_close_position
+    ✗ Closing single position → use trade_close_position
+    ✗ User hasn't explicitly said "emergency" or "panic"
+    
+    CRITICAL: This closes ALL positions for the symbol at MARKET price.
+    You may get poor fills. Only use in true emergencies.
     
     Args:
         symbol: Symbol to close ALL positions
@@ -2484,8 +2580,22 @@ async def get_quote(
     asset_type: str = 'STK'  # 'STK' for stock, 'OPT' for option
 ) -> Dict[str, Any]:
     """
-    [TRADING] Get real-time quotes from IBKR for stocks/ETFs.
-    Live market data for trading decisions, not file quotes.
+    [MARKET DATA] Get real-time stock/ETF quote (single symbol).
+    
+    PRIMARY USE: Current price for ONE stock or ETF.
+    
+    USE WHEN USER SAYS:
+    ✓ "What's SPY price?"
+    ✓ "Quote for AAPL"
+    ✓ "Current price of Tesla"
+    ✓ "How much is QQQ?"
+    
+    DO NOT USE WHEN:
+    ✗ Multiple symbols needed → use trade_get_watchlist_quotes
+    ✗ Options pricing → use trade_get_options_chain
+    ✗ Index quotes (SPX, VIX) → use trade_get_index_quote
+    ✗ Historical prices → use trade_get_price_history
+    ✗ Portfolio value → use trade_get_portfolio_summary
     
     Args:
         symbol: Stock/ETF symbol (e.g., 'SPY', 'AAPL')
@@ -2583,11 +2693,30 @@ async def get_quote(
 @mcp.tool(name="trade_get_account_summary")
 async def get_account_summary() -> Dict[str, Any]:
     """
-    [TRADING] Get IBKR account balance, buying power, and margin info.
-    Trading account summary, not system account information.
+    [ACCOUNT] Get account balance, buying power, and margin.
+    
+    PRIMARY USE: Check account cash, buying power, and margin requirements.
+    
+    USE WHEN USER SAYS:
+    ✓ "What's my account balance?"
+    ✓ "How much buying power?"
+    ✓ "Show margin requirements"
+    ✓ "Account cash available"
+    ✓ "Can I afford this trade?"
+    
+    DO NOT USE WHEN:
+    ✗ Portfolio P&L needed → use trade_get_portfolio_summary
+    ✗ Individual positions → use trade_get_positions
+    ✗ Total portfolio value → use trade_get_portfolio_summary
+    ✗ Trade history → use trade_get_history
     
     Returns:
-        Account summary with balance, buying power, margin cushion, and P&L
+        Account-level information:
+        - Total cash balance
+        - Buying power
+        - Margin used/available
+        - Day trading buying power
+        - Account restrictions
     """
     logger.info("Fetching account information")
     
@@ -3157,18 +3286,38 @@ async def execute_with_verification(
     stop_loss_percent: float = 50.0
 ) -> Dict[str, Any]:
     """
-    [TRADING] Execute trade with full verification and stop loss.
-    Uses strategy from analysis or session state.
+    [EXECUTION - EXTRA SAFETY] Execute with additional verification steps.
+    
+    PRIMARY USE: When user wants extra confirmation or automatic stop loss.
+    
+    USE WHEN USER SAYS:
+    ✓ "Execute with extra safety"
+    ✓ "Place order and set stop loss"
+    ✓ "Execute but double-check everything"
+    ✓ "I want automatic stops"
+    
+    DO NOT USE WHEN:
+    ✗ Standard execution is fine → use trade_execute
+    ✗ Emergency close needed → use trade_emergency_close
+    ✗ Closing positions → use trade_close_position
+    
+    DIFFERENCE FROM trade_execute:
+    - Performs additional validation checks
+    - Automatically sets stop loss after fill
+    - More detailed execution reporting
+    - Slightly slower but safer
     
     Args:
         strategy_id: Strategy ID from analysis (optional)
         symbol: Symbol if using session strategy (optional)
         confirm_token: Must be 'USER_CONFIRMED'
-        set_stop_loss: Automatically set stop loss
-        stop_loss_percent: Stop loss at X% of max loss
+        set_stop_loss: Automatically set stop loss (default: True)
+        stop_loss_percent: Stop loss at X% of max loss (default: 50%)
         
     Returns:
-        Execution result with verification
+        Execution result with detailed verification
+    
+    SAFETY: Enhanced verification + automatic stop loss.
     """
     logger.info(f"[EXECUTE_V2] Starting verified execution")
     
@@ -3693,17 +3842,33 @@ async def check_market_data() -> Dict[str, Any]:
 @mcp.tool
 async def trade_get_portfolio_summary() -> Dict[str, Any]:
     """
-    Get comprehensive portfolio summary with aggregate P&L and Greeks.
+    [PORTFOLIO AGGREGATE] Complete portfolio overview with totals.
     
-    Returns complete portfolio overview including:
-    - Total P&L (realized and unrealized)
-    - Aggregate Greeks across all positions
-    - Position count and distribution
-    - Cash and buying power
-    - Risk metrics
+    PRIMARY USE: See total portfolio value, P&L, and aggregate Greeks.
+    
+    USE WHEN USER SAYS:
+    ✓ "Show my portfolio"
+    ✓ "What's my total P&L?"
+    ✓ "Portfolio summary"
+    ✓ "How am I doing overall?"
+    ✓ "Total portfolio value"
+    ✓ "Aggregate Greeks"
+    
+    DO NOT USE WHEN:
+    ✗ Individual positions needed → use trade_get_positions
+    ✗ Just account balance → use trade_get_account_summary
+    ✗ Single stock quote → use trade_get_quote
+    ✗ Open orders → use trade_get_open_orders
     
     Returns:
-        Portfolio summary with P&L, Greeks, and risk metrics
+        Aggregate portfolio metrics:
+        - Total portfolio value
+        - Total P&L (realized + unrealized)
+        - Aggregate Greeks (portfolio-wide)
+        - Position distribution
+        - Risk metrics (beta, VaR)
+    
+    NOTE: This is the "big picture" view. For details, use trade_get_positions.
     """
     from src.modules.data.portfolio import PortfolioAnalyzer
     

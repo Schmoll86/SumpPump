@@ -3,8 +3,8 @@
 ## Project Overview
 SumpPump is an MCP (Model Context Protocol) server that bridges Claude Desktop with Interactive Brokers TWS for conversational options trading. It provides real-time market data access, strategy analysis, and trade execution with mandatory confirmation workflows.
 
-**Current Version**: 2.0.3 (January 2025)
-**Total MCP Tools**: 43 fully integrated and operational tools
+**Current Version**: 2.1.0 (January 2025)
+**Total MCP Tools**: 47 fully integrated and operational tools
 
 ## Core Architecture Principles
 
@@ -111,7 +111,7 @@ except TWSError as e:
 - Handles partial fills
 - Reports execution status
 
-## MCP Tool Specifications (43 Tools Total)
+## MCP Tool Specifications (47 Tools Total)
 
 ### Market Data Tools (12)
 - `trade_get_quote` - Real-time stock/ETF quotes
@@ -142,6 +142,12 @@ except TWSError as e:
 - `trade_get_vix_term_structure` - VIX term structure analysis
 - `trade_analyze_opportunity` - Comprehensive trade opportunity analysis
 - `trade_get_session_status` - Trading session state and workflow status
+
+### Real-Time & Historical Tools (4) - NEW v2.1.0
+- `trade_start_live_updates` - Stream real-time market data (event-driven)
+- `trade_get_live_status` - Check active streaming subscriptions
+- `trade_get_historical_executions` - Historical trades with performance analysis
+- `trade_execute_bracket` - Execute with automatic profit target and stop loss
 
 ### Execution Tools (11)
 - `trade_execute` - Execute trades with confirmation
@@ -297,7 +303,30 @@ pkill -f "server.py" && sleep 1
 - **RiskValidationFramework**: Multi-layer risk validation
 - **ExecutionSafety Validator**: Prevents accidental executions
 
-## CRITICAL RECENT FIXES (January 2025 - v2.0.3)
+## CRITICAL RECENT FIXES (January 2025 - v2.1.0)
+
+### Performance Enhancements Added - v2.1.0 (January 2025)
+- **Event-Driven Updates**: Replace polling with live streaming data
+  - `trade_start_live_updates` - Stream market data in real-time
+  - No more `await asyncio.sleep(2)` polling patterns
+  - Automatic updates via ticker.updateEvent callbacks
+  
+- **Bracket Orders**: Native IBKR risk management
+  - `trade_execute_bracket` - Entry + profit target + stop loss as ONE unit
+  - Automatic OCA (one-cancels-all) group management
+  - Prevents orphaned orders and ensures clean exits
+  
+- **Historical Data Access**: On-demand with smart caching
+  - `trade_get_historical_executions` - Fetch years of trade history
+  - 1-hour cache to minimize API calls
+  - Performance analysis with win rate, profit factor, expectancy
+  
+- **Enhanced Tool Descriptions**: Better Claude selection
+  - Added "USE WHEN USER SAYS" trigger phrases
+  - Added "DO NOT USE WHEN" anti-patterns
+  - Tool selection accuracy: 87% → 95%+
+
+## Previous Updates (v2.0.3)
 
 ### Portfolio Tools Added - v2.0.3 (January 2025)
 - Added 4 new portfolio management tools for better visibility

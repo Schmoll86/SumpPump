@@ -4197,6 +4197,305 @@ async def trade_analyze_greeks() -> Dict[str, Any]:
         }
 
 
+# ============================================================================
+# NEW FEATURES: Event-Driven Updates, Bracket Orders, Historical Data
+# ============================================================================
+
+@mcp.tool
+async def trade_start_live_updates(
+    symbols: List[str],
+    include_portfolio: bool = True
+) -> Dict[str, Any]:
+    """
+    [LIVE DATA] Start streaming real-time updates for symbols and portfolio.
+    
+    PRIMARY USE: Replace polling with live streaming data.
+    
+    USE WHEN USER SAYS:
+    ✓ "Monitor my portfolio live"
+    ✓ "Stream SPY updates"
+    ✓ "Watch these symbols in real-time"
+    ✓ "Start live monitoring"
+    
+    DO NOT USE WHEN:
+    ✗ One-time quote needed → use trade_get_quote
+    ✗ Historical data → use trade_get_historical_executions
+    
+    Args:
+        symbols: List of symbols to monitor
+        include_portfolio: Also stream portfolio updates
+    
+    Returns:
+        Subscription status and initial data
+    """
+    from src.modules.data.live_data_manager import LiveDataManager
+    
+    logger.info(f"[LIVE] Starting live updates for {symbols}")
+    
+    try:
+        await ensure_tws_connected()
+        
+        manager = LiveDataManager()
+        
+        # Subscribe to symbols
+        initial_data = {}
+        for symbol in symbols:
+            from ib_async import Stock
+            contract = Stock(symbol, 'SMART', 'USD')
+            ticker = await manager.subscribe(contract)
+            
+            initial_data[symbol] = {
+                'bid': ticker.bid,
+                'ask': ticker.ask,
+                'last': ticker.last,
+                'volume': ticker.volume
+            }
+        
+        # Subscribe to portfolio if requested
+        if include_portfolio:
+            await manager.subscribe_portfolio()
+        
+        # Get subscription stats
+        stats = manager.get_subscription_stats()
+        
+        logger.info(f"[LIVE] Streaming started - {stats['active_subscriptions']} subscriptions")
+        
+        return {
+            'status': 'streaming',
+            'subscriptions': stats['active_subscriptions'],
+            'symbols': symbols,
+            'portfolio_streaming': include_portfolio,
+            'initial_data': initial_data,
+            'message': 'Live updates started. Data will stream in real-time.'
+        }
+        
+    except Exception as e:
+        logger.error(f"[LIVE] Failed to start streaming: {e}", exc_info=True)
+        return {
+            'status': 'error',
+            'error': str(e),
+            'message': 'Failed to start live updates'
+        }
+
+
+@mcp.tool
+async def trade_execute_bracket(
+    symbol: str,
+    action: str,  # 'BUY' or 'SELL'
+    quantity: int,
+    entry_price: float,
+    profit_target_percent: float = 50.0,
+    stop_loss_percent: float = 25.0,
+    confirm_token: str = None
+) -> Dict[str, Any]:
+    """
+    [EXECUTION - BRACKET] Execute with automatic profit target and stop loss.
+    
+    PRIMARY USE: Open position with pre-set exit orders for risk management.
+    
+    USE WHEN USER SAYS:
+    ✓ "Buy with stop loss and profit target"
+    ✓ "Execute with bracket order"
+    ✓ "Place order with automatic exits"
+    ✓ "Set up risk management"
+    
+    DO NOT USE WHEN:
+    ✗ Standard execution → use trade_execute
+    ✗ Closing positions → use trade_close_position
+    ✗ Manual stop loss preferred → use trade_execute then trade_set_stop_loss
+    
+    Args:
+        symbol: Symbol to trade
+        action: 'BUY' or 'SELL'
+        quantity: Number of shares/contracts
+        entry_price: Entry limit price
+        profit_target_percent: % above entry for profit (default 50%)
+        stop_loss_percent: % below entry for stop (default 25%)
+        confirm_token: Must be 'USER_CONFIRMED'
+    
+    Returns:
+        Bracket order with 3 linked orders
+    
+    SAFETY: Creates parent order + profit target + stop loss as ONE unit.
+    """
+    logger.info(f"[BRACKET] Bracket order requested for {symbol}")
+    
+    # Safety check
+    if confirm_token != 'USER_CONFIRMED':
+        return {
+            'status': 'blocked',
+            'error': 'CONFIRMATION_REQUIRED',
+            'message': 'Bracket orders require confirm_token="USER_CONFIRMED"'
+        }
+    
+    try:
+        from src.modules.execution.bracket_orders import BracketOrderManager, BracketOrderParams
+        from ib_async import Stock, Option
+        
+        await ensure_tws_connected()
+        
+        # Create contract
+        # Simple implementation for stocks first
+        contract = Stock(symbol, 'SMART', 'USD')
+        
+        # Create bracket params
+        params = BracketOrderParams(
+            entry_price=entry_price,
+            take_profit_percent=profit_target_percent,
+            stop_loss_percent=stop_loss_percent,
+            quantity=quantity
+        )
+        
+        # Calculate levels for display
+        profit_target, stop_loss = params.calculate_levels()
+        
+        # Place bracket order
+        manager = BracketOrderManager()
+        result = await manager.place_bracket_order(
+            contract=contract,
+            action=action,
+            params=params
+        )
+        
+        logger.info(f"[BRACKET] Order placed successfully - {result.get('bracket_id')}")
+        
+        return {
+            'status': 'success',
+            'symbol': symbol,
+            'action': action,
+            'quantity': quantity,
+            'levels': {
+                'entry': entry_price,
+                'profit_target': round(profit_target, 2),
+                'stop_loss': round(stop_loss, 2)
+            },
+            'risk_reward': {
+                'max_profit': round((profit_target - entry_price) * quantity, 2),
+                'max_loss': round((entry_price - stop_loss) * quantity, 2),
+                'ratio': round(profit_target_percent / stop_loss_percent, 2)
+            },
+            'orders': result.get('orders'),
+            'message': 'Bracket order placed. All three orders are linked - fill parent to activate exits.'
+        }
+        
+    except Exception as e:
+        logger.error(f"[BRACKET] Failed to place bracket order: {e}", exc_info=True)
+        return {
+            'status': 'error',
+            'error': str(e),
+            'message': 'Failed to place bracket order'
+        }
+
+
+@mcp.tool
+async def trade_get_historical_executions(
+    days_back: int = 30,
+    symbol: Optional[str] = None,
+    analyze: bool = True
+) -> Dict[str, Any]:
+    """
+    [HISTORICAL] Get past trade executions with performance analysis.
+    
+    PRIMARY USE: Review trading history and performance metrics.
+    
+    USE WHEN USER SAYS:
+    ✓ "Show my trade history"
+    ✓ "How did I do last month?"
+    ✓ "What's my win rate?"
+    ✓ "Review past trades"
+    ✓ "Performance analysis"
+    
+    DO NOT USE WHEN:
+    ✗ Current positions → use trade_get_positions
+    ✗ Open orders → use trade_get_open_orders
+    ✗ Live P&L → use trade_get_portfolio_summary
+    
+    Args:
+        days_back: Number of days of history (default 30)
+        symbol: Filter by symbol (None for all)
+        analyze: Include performance analysis
+    
+    Returns:
+        Historical executions with performance metrics
+    """
+    from src.modules.data.historical_data import HistoricalDataProvider
+    
+    logger.info(f"[HISTORY] Fetching {days_back} days of execution history")
+    
+    try:
+        provider = HistoricalDataProvider()
+        
+        # Get executions
+        executions = await provider.get_executions(
+            days_back=days_back,
+            symbol=symbol,
+            use_cache=True
+        )
+        
+        logger.info(f"[HISTORY] Found {len(executions)} executions")
+        
+        # Analyze if requested
+        analysis = None
+        if analyze and executions:
+            analysis = await provider.analyze_performance(executions)
+        
+        # Convert executions to dict
+        exec_list = [exec.to_dict() for exec in executions[:100]]  # Limit to 100 for response
+        
+        return {
+            'status': 'success',
+            'period': f'{days_back} days',
+            'symbol_filter': symbol or 'all',
+            'total_executions': len(executions),
+            'executions': exec_list,
+            'analysis': analysis,
+            'cache_info': 'Using 1-hour cache to reduce API calls'
+        }
+        
+    except Exception as e:
+        logger.error(f"[HISTORY] Failed to get historical data: {e}", exc_info=True)
+        return {
+            'status': 'error',
+            'error': str(e),
+            'message': 'Failed to retrieve historical executions'
+        }
+
+
+@mcp.tool
+async def trade_get_live_status() -> Dict[str, Any]:
+    """
+    [MONITORING] Get status of all live data subscriptions.
+    
+    PRIMARY USE: Check what symbols are streaming live.
+    
+    USE WHEN USER SAYS:
+    ✓ "What's streaming?"
+    ✓ "Show live subscriptions"
+    ✓ "Active monitors"
+    
+    Returns:
+        Active subscription details
+    """
+    from src.modules.data.live_data_manager import LiveDataManager
+    
+    try:
+        manager = LiveDataManager()
+        stats = manager.get_subscription_stats()
+        
+        return {
+            'status': 'success',
+            'active_subscriptions': stats['active_subscriptions'],
+            'total_updates': stats['total_updates'],
+            'subscriptions': stats['subscriptions']
+        }
+        
+    except Exception as e:
+        return {
+            'status': 'error',
+            'error': str(e)
+        }
+
+
 # Initialize TWS connection when needed
 async def ensure_tws_connected():
     """Ensure TWS connection is established."""

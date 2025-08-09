@@ -1,10 +1,10 @@
 # SumpPump - IBKR Trading Assistant
 
-Production-ready MCP (Model Context Protocol) server that bridges Claude Desktop with Interactive Brokers TWS for conversational options trading and market analysis. All 39 trading tools are fully integrated and operational with V2 architecture, including market scanning capabilities.
+Production-ready MCP (Model Context Protocol) server that bridges Claude Desktop with Interactive Brokers TWS for conversational options trading and market analysis. All 47 trading tools are fully integrated and operational with V2 architecture, including portfolio management and live data streaming.
 
-## ✅ Current Status (v2.0.2 - January 2025)
+## ✅ Current Status (v2.0.3 - January 2025)
 
-- **39 MCP Tools**: Fully integrated and operational (including new market scanners)
+- **47 MCP Tools**: Fully integrated and operational (including portfolio management)
 - **Live Trading**: Production-ready with real money trading
 - **TWS Integration**: Complete with auto-reconnection and event loop fixes
 - **Risk Management**: Mandatory confirmation workflows
@@ -22,9 +22,9 @@ Production-ready MCP (Model Context Protocol) server that bridges Claude Desktop
 - **Trade Execution**: Place orders with mandatory confirmation workflow
 - **Risk Management**: Position sizing, stop-loss prompts, max loss calculations
 
-### Working MCP Tools (39 Total)
+### Working MCP Tools (47 Total)
 
-#### Market Data (10 tools)
+#### Market Data (12 tools)
 - `trade_get_quote` - Real-time stock/ETF quotes
 - `trade_get_options_chain` - Full options chain with Greeks
 - `trade_get_price_history` - Historical OHLCV data
@@ -65,6 +65,18 @@ Production-ready MCP (Model Context Protocol) server that bridges Claude Desktop
 - `trade_place_extended_order` - Place extended hours orders
 - `trade_get_extended_schedule` - Get extended trading schedule
 - `trade_modify_for_extended` - Modify order for extended hours
+
+#### Portfolio Management (4 tools) - NEW in v2.0.3
+- `trade_get_portfolio_summary` - Aggregate P&L and portfolio Greeks
+- `trade_get_history` - Query past trades with filters
+- `trade_adjust_position` - Smart position adjustments (roll/resize/hedge)
+- `trade_analyze_greeks` - Portfolio-wide Greeks analysis with scenarios
+
+#### Event-Driven & Bracket Orders (4 tools) - NEW in v2.0.3
+- `trade_start_live_updates` - Stream real-time market data
+- `trade_execute_bracket` - Place bracket orders with profit/stop
+- `trade_get_historical_executions` - Get historical execution data
+- `trade_get_live_status` - Check live data streaming status
 
 #### Advanced (5 tools)
 - `trade_roll_option` - Roll options forward
@@ -171,7 +183,7 @@ In Claude Desktop:
 SumpPump/
 ├── src/
 │   ├── mcp/
-│   │   └── server.py          # MCP server with 27 tools
+│   │   └── server.py          # MCP server with 47 tools
 │   ├── core/                  # Infrastructure
 │   │   ├── exceptions.py      # Error hierarchy
 │   │   ├── connection_monitor.py
@@ -190,7 +202,15 @@ SumpPump/
 └── README.md                  # This file
 ```
 
-## Recent Fixes (v2.0 - January 2025)
+## Recent Updates (v2.0.3 - January 2025)
+
+### New Features
+- **Portfolio Management**: Complete portfolio analysis with P&L and Greeks aggregation
+- **Event-Driven Updates**: Live streaming market data with callbacks
+- **Bracket Orders**: Automatic profit target and stop loss orders
+- **Position Adjustments**: Roll, resize, hedge, and partial close capabilities
+
+## Previous Fixes (v2.0.2 - January 2025)
 
 ### Event Loop Conflicts
 - **Problem**: "This event loop is already running" error

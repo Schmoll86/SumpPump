@@ -3,7 +3,7 @@
 ## Project Overview
 SumpPump is an MCP (Model Context Protocol) server that bridges Claude Desktop with Interactive Brokers TWS for conversational options trading. It provides real-time market data access, strategy analysis, and trade execution with mandatory confirmation workflows.
 
-**Current Version**: 2.1.0 (January 2025)
+**Current Version**: 2.0.3 (January 2025)
 **Total MCP Tools**: 47 fully integrated and operational tools
 
 ## Core Architecture Principles
@@ -143,7 +143,7 @@ except TWSError as e:
 - `trade_analyze_opportunity` - Comprehensive trade opportunity analysis
 - `trade_get_session_status` - Trading session state and workflow status
 
-### Real-Time & Historical Tools (4) - NEW v2.1.0
+### Event-Driven & Bracket Orders (4) - NEW
 - `trade_start_live_updates` - Stream real-time market data (event-driven)
 - `trade_get_live_status` - Check active streaming subscriptions
 - `trade_get_historical_executions` - Historical trades with performance analysis

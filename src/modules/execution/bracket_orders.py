@@ -17,7 +17,6 @@ from ib_async import (
 )
 
 from src.modules.tws.connection import get_tws_connection
-from src.modules.utils.type_coercion import ensure_contract
 
 
 @dataclass
@@ -93,23 +92,44 @@ class BracketOrderManager:
             f"Stop: {stop_loss:.2f if stop_loss else 'None'}"
         )
         
-        # Create bracket order using ib_async's helper
-        bracket_orders = self._create_bracket_orders(
-            action=action,
-            quantity=params.quantity,
-            limit_price=params.entry_price,
-            take_profit_price=profit_target,
-            stop_loss_price=stop_loss,
-            trailing_stop=params.trailing_stop,
-            trailing_amount=params.trailing_amount
-        )
+        # Place parent order first to get order ID
+        parent = LimitOrder(action, params.quantity, params.entry_price)
+        parent.orderType = 'LMT'
+        parent.transmit = False  # Don't transmit yet
         
-        # Place all orders
-        trades = []
-        for i, order in enumerate(bracket_orders):
-            trade = ib.placeOrder(contract, order)
-            trades.append(trade)
-            logger.debug(f"[BRACKET] Placed order {i+1}/3: {order.orderType}")
+        # Place parent to get order ID
+        parent_trade = ib.placeOrder(contract, parent)
+        parent_order_id = parent_trade.order.orderId
+        trades = [parent_trade]
+        
+        logger.debug(f"[BRACKET] Placed parent order: {parent_order_id}")
+        
+        # Create child orders with parent ID
+        if profit_target:
+            profit_action = 'SELL' if action == 'BUY' else 'BUY'
+            profit = LimitOrder(profit_action, params.quantity, profit_target)
+            profit.parentId = parent_order_id
+            profit.transmit = False
+            profit_trade = ib.placeOrder(contract, profit)
+            trades.append(profit_trade)
+            logger.debug(f"[BRACKET] Placed profit target: {profit_trade.order.orderId}")
+        
+        if stop_loss:
+            stop_action = 'SELL' if action == 'BUY' else 'BUY'
+            stop = StopOrder(stop_action, params.quantity, stop_loss)
+            stop.parentId = parent_order_id
+            stop.transmit = True  # Transmit all orders now
+            
+            # Set OCA group
+            if len(trades) > 1:  # Have profit order
+                import time
+                oca_group = f"bracket_{int(time.time())}"
+                trades[1].order.ocaGroup = oca_group
+                stop.ocaGroup = oca_group
+                
+            stop_trade = ib.placeOrder(contract, stop)
+            trades.append(stop_trade)
+            logger.debug(f"[BRACKET] Placed stop loss: {stop_trade.order.orderId}")
             
         # Wait for parent order to be acknowledged
         parent_trade = trades[0]

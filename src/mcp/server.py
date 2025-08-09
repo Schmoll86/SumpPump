@@ -4038,7 +4038,7 @@ async def trade_adjust_position(
         
         position = None
         for pos in positions:
-            contract = ensure_contract(pos.contract)
+            contract = pos.contract
             if contract.symbol == symbol:
                 position = pos
                 break

@@ -138,7 +138,17 @@ class LiveDataManager:
                 # Call registered callbacks
                 for callback in subscription.callbacks:
                     try:
-                        asyncio.create_task(callback(ticker))
+                        # Check if callback is async or sync
+                        import inspect
+                        if inspect.iscoroutinefunction(callback):
+                            # Async callback - create task
+                            asyncio.create_task(callback(ticker))
+                        else:
+                            # Sync callback - call directly
+                            try:
+                                callback(ticker)
+                            except Exception as cb_error:
+                                logger.error(f"[LIVE] Sync callback error: {cb_error}")
                     except Exception as e:
                         logger.error(f"[LIVE] Callback error: {e}")
                         

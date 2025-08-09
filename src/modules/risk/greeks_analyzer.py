@@ -14,7 +14,6 @@ from ib_async import Option, Stock
 
 from src.modules.tws.connection import get_tws_connection
 from src.modules.data.portfolio import PortfolioGreeks
-from src.modules.utils.type_coercion import ensure_contract, ensure_position
 
 
 @dataclass
@@ -85,7 +84,7 @@ class GreeksAnalyzer:
         greeks = PortfolioGreeks()
         
         for position in positions:
-            contract = ensure_contract(position.contract)
+            contract = position.contract
             
             # Only options have Greeks
             if contract.secType != 'OPT':
@@ -150,7 +149,7 @@ class GreeksAnalyzer:
         })
         
         for position in positions:
-            contract = ensure_contract(position.contract)
+            contract = position.contract
             symbol = contract.symbol
             
             if contract.secType == 'STK':

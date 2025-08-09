@@ -170,21 +170,25 @@ class HistoricalDataProvider:
         # Convert to our format
         executions = []
         for exec_data in executions_data:
-            execution = exec_data.execution
-            commission = exec_data.commissionReport
+            if not exec_data:
+                continue
+                
+            execution = exec_data.execution if hasattr(exec_data, 'execution') else exec_data
+            commission = exec_data.commissionReport if hasattr(exec_data, 'commissionReport') else None
             
+            # Defensive checks for all fields
             hist_exec = HistoricalExecution(
-                symbol=execution.contract.symbol if execution.contract else 'UNKNOWN',
-                exec_id=execution.execId,
-                order_id=execution.orderId,
-                time=execution.time,
-                side=execution.side,
-                quantity=execution.shares,
-                price=execution.price,
-                commission=commission.commission if commission else 0.0,
-                realized_pnl=commission.realizedPNL if commission else 0.0,
-                account=execution.acctNumber,
-                exchange=execution.exchange
+                symbol=execution.contract.symbol if hasattr(execution, 'contract') and execution.contract else 'UNKNOWN',
+                exec_id=execution.execId if hasattr(execution, 'execId') else '',
+                order_id=execution.orderId if hasattr(execution, 'orderId') else 0,
+                time=execution.time if hasattr(execution, 'time') else datetime.now(),
+                side=execution.side if hasattr(execution, 'side') else 'UNKNOWN',
+                quantity=execution.shares if hasattr(execution, 'shares') else 0,
+                price=execution.price if hasattr(execution, 'price') else 0.0,
+                commission=commission.commission if commission and hasattr(commission, 'commission') else 0.0,
+                realized_pnl=commission.realizedPNL if commission and hasattr(commission, 'realizedPNL') else 0.0,
+                account=execution.acctNumber if hasattr(execution, 'acctNumber') else 'UNKNOWN',
+                exchange=execution.exchange if hasattr(execution, 'exchange') else 'UNKNOWN'
             )
             executions.append(hist_exec)
         

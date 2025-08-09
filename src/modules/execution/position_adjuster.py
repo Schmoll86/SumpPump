@@ -12,7 +12,6 @@ from loguru import logger
 from ib_async import Option, Stock, Order, MarketOrder, LimitOrder, Position
 
 from src.modules.tws.connection import get_tws_connection
-from src.modules.utils.type_coercion import ensure_contract, ensure_position
 
 
 @dataclass
@@ -74,7 +73,7 @@ class PositionAdjuster:
         
         logger.info(f"[ADJUST] Calculating roll to {new_expiry} strike {new_strike}")
         
-        contract = ensure_contract(position.contract)
+        contract = position.contract
         
         # For options, create new contract
         if contract.secType == 'OPT':
@@ -179,7 +178,7 @@ class PositionAdjuster:
                 'message': 'New quantity equals current quantity'
             }
         
-        contract = ensure_contract(position.contract)
+        contract = position.contract
         
         # Get current price
         ib = self.tws.ib
@@ -250,7 +249,7 @@ class PositionAdjuster:
         
         logger.info(f"[ADJUST] Calculating {hedge_type} hedge")
         
-        contract = ensure_contract(position.contract)
+        contract = position.contract
         
         if contract.secType != 'STK':
             return {
@@ -371,7 +370,7 @@ class PositionAdjuster:
         
         logger.info(f"[ADJUST] Partial close {quantity_to_close} of {position.position}")
         
-        contract = ensure_contract(position.contract)
+        contract = position.contract
         
         # Get current price
         ib = self.tws.ib

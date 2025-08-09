@@ -1343,7 +1343,7 @@ class TWSConnection:
 # Global connection instance - lazy initialization
 _tws_connection_instance = None
 
-def get_tws_connection():
+async def get_tws_connection():
     """Get or create the global TWS connection instance."""
     global _tws_connection_instance
     if _tws_connection_instance is None:

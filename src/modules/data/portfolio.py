@@ -13,7 +13,7 @@ from loguru import logger
 from ib_async import Contract, Option, Stock
 
 from src.modules.tws.connection import get_tws_connection
-from src.modules.utils.type_coercion import ensure_contract, ensure_position
+# Type coercion not needed - using ib_async types directly
 
 
 @dataclass
@@ -118,7 +118,12 @@ class PortfolioAnalyzer:
             account_summary = await self.tws.ib.accountSummaryAsync()
             
             # Parse account metrics
-            account_id = self.tws.account_id
+            # Get account ID from IB wrapper or config
+            if hasattr(self.tws, 'ib') and self.tws.ib.wrapper.accounts:
+                account_id = self.tws.ib.wrapper.accounts[0]
+            else:
+                from src.config import config
+                account_id = config.tws.account or 'UNKNOWN'
             total_value = 0.0
             total_cash = 0.0
             buying_power = 0.0
@@ -144,10 +149,10 @@ class PortfolioAnalyzer:
             portfolio_greeks = PortfolioGreeks() if include_greeks else None
             
             for pos in positions:
-                pos = ensure_position(pos)
+                # pos already in correct format
                 
                 # Get current market value
-                contract = ensure_contract(pos.contract)
+                contract = pos.contract
                 ticker = await self.tws.ib.reqTickersAsync(contract)
                 
                 if ticker:
@@ -287,7 +292,7 @@ class PortfolioAnalyzer:
             
             for fill in filled_orders:
                 if fill.time >= cutoff_date:
-                    contract = ensure_contract(fill.contract)
+                    contract = fill.contract
                     
                     # Filter by symbol if specified
                     if symbol and contract.symbol != symbol:

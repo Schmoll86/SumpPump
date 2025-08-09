@@ -27,27 +27,27 @@ CONTEXT_FILES="CLAUDE.md"
 
 case $MODULE in
     "tws")
-        CONTEXT_FILES="$CONTEXT_FILES src/modules/tws/CONTEXT.md src/config.py"
+        CONTEXT_FILES="$CONTEXT_FILES src/config.py"
         echo "Context: TWS Connection & Market Data"
         ;;
     "data")
-        CONTEXT_FILES="$CONTEXT_FILES src/modules/data/CONTEXT.md src/models.py"
+        CONTEXT_FILES="$CONTEXT_FILES src/models.py"
         echo "Context: Options Chain & Data Management"
         ;;
     "strategies")
-        CONTEXT_FILES="$CONTEXT_FILES src/modules/strategies/CONTEXT.md src/models.py"
+        CONTEXT_FILES="$CONTEXT_FILES src/models.py"
         echo "Context: Options Strategy Calculations"
         ;;
     "risk")
-        CONTEXT_FILES="$CONTEXT_FILES src/modules/risk/CONTEXT.md src/config.py"
+        CONTEXT_FILES="$CONTEXT_FILES src/config.py"
         echo "Context: Risk Management & Validation"
         ;;
     "execution")
-        CONTEXT_FILES="$CONTEXT_FILES src/modules/execution/CONTEXT.md"
+        CONTEXT_FILES="$CONTEXT_FILES src/models.py"
         echo "Context: Order Execution & Confirmation"
         ;;
     "mcp")
-        CONTEXT_FILES="$CONTEXT_FILES src/mcp/CONTEXT.md docs/ai-context/project-structure.md"
+        CONTEXT_FILES="$CONTEXT_FILES"
         echo "Context: MCP Server & Tool Integration"
         ;;
     *)

@@ -3686,6 +3686,352 @@ async def check_market_data() -> Dict[str, Any]:
         }
 
 
+# ============================================================================
+# NEW PORTFOLIO AND POSITION MANAGEMENT TOOLS
+# ============================================================================
+
+@mcp.tool
+async def trade_get_portfolio_summary() -> Dict[str, Any]:
+    """
+    Get comprehensive portfolio summary with aggregate P&L and Greeks.
+    
+    Returns complete portfolio overview including:
+    - Total P&L (realized and unrealized)
+    - Aggregate Greeks across all positions
+    - Position count and distribution
+    - Cash and buying power
+    - Risk metrics
+    
+    Returns:
+        Portfolio summary with P&L, Greeks, and risk metrics
+    """
+    from src.modules.data.portfolio import PortfolioAnalyzer
+    
+    logger.info("[PORTFOLIO] Getting portfolio summary")
+    
+    try:
+        # Ensure connection
+        await ensure_tws_connected()
+        
+        # Get portfolio analyzer
+        analyzer = PortfolioAnalyzer()
+        
+        # Get comprehensive summary
+        summary = await analyzer.get_portfolio_summary()
+        
+        logger.info(f"[PORTFOLIO] Retrieved summary: {summary.positions_count} positions, total P&L: ${summary.total_pnl:,.2f}")
+        logger.debug(f"[PORTFOLIO] Greeks - Delta: {summary.greeks.total_delta:.2f}, Theta: {summary.greeks.total_theta:.2f}")
+        
+        return {
+            'status': 'success',
+            'account_id': summary.account_id,
+            'timestamp': summary.timestamp.isoformat(),
+            'positions': {
+                'count': summary.positions_count,
+                'long_positions': summary.long_positions,
+                'short_positions': summary.short_positions,
+                'options_positions': summary.options_positions,
+                'stock_positions': summary.stock_positions
+            },
+            'value': {
+                'total_value': summary.total_value,
+                'total_cash': summary.total_cash,
+                'buying_power': summary.buying_power,
+                'margin_used': summary.margin_used,
+                'available_funds': summary.available_funds
+            },
+            'pnl': {
+                'total_pnl': summary.total_pnl,
+                'daily_pnl': summary.daily_pnl,
+                'unrealized_pnl': summary.unrealized_pnl,
+                'realized_pnl': summary.realized_pnl,
+                'pnl_percentage': summary.pnl_percentage
+            },
+            'greeks': summary.greeks.to_dict() if summary.greeks else None,
+            'risk_metrics': {
+                'portfolio_beta': summary.portfolio_beta,
+                'var_95': summary.var_95,
+                'max_drawdown': summary.max_drawdown,
+                'sharpe_ratio': summary.sharpe_ratio
+            },
+            'positions_detail': summary.positions_detail
+        }
+        
+    except Exception as e:
+        logger.error(f"[PORTFOLIO] Failed to get summary: {e}", exc_info=True)
+        return {
+            'status': 'error',
+            'error': str(e),
+            'message': 'Failed to retrieve portfolio summary'
+        }
+
+
+@mcp.tool
+async def trade_get_history(
+    symbol: Optional[str] = None,
+    days: int = 30,
+    include_closed: bool = True,
+    include_open: bool = False
+) -> Dict[str, Any]:
+    """
+    Get historical trades and P&L for analysis.
+    
+    Args:
+        symbol: Filter by symbol (None for all)
+        days: Number of days of history (default 30)
+        include_closed: Include closed trades
+        include_open: Include open positions
+    
+    Returns:
+        Historical trades with P&L and performance metrics
+    """
+    from src.modules.data.trade_history import TradeHistoryAnalyzer
+    
+    logger.info(f"[HISTORY] Getting trade history - symbol: {symbol}, days: {days}")
+    
+    try:
+        await ensure_tws_connected()
+        
+        analyzer = TradeHistoryAnalyzer()
+        
+        # Get trades based on filters
+        trades = await analyzer.get_trade_history(
+            symbol=symbol,
+            days=days,
+            include_closed=include_closed,
+            include_open=include_open
+        )
+        
+        logger.info(f"[HISTORY] Found {len(trades)} trades in last {days} days")
+        
+        # Calculate statistics
+        stats = await analyzer.calculate_statistics(trades)
+        
+        logger.debug(f"[HISTORY] Stats - Win rate: {stats.get('win_rate', 0):.1f}%, Avg P&L: ${stats.get('avg_pnl', 0):.2f}")
+        
+        return {
+            'status': 'success',
+            'period': f'{days} days',
+            'symbol_filter': symbol or 'all',
+            'trades_count': len(trades),
+            'trades': trades,
+            'statistics': stats,
+            'performance': {
+                'total_pnl': stats.get('total_pnl', 0),
+                'win_rate': stats.get('win_rate', 0),
+                'average_win': stats.get('average_win', 0),
+                'average_loss': stats.get('average_loss', 0),
+                'profit_factor': stats.get('profit_factor', 0),
+                'max_win': stats.get('max_win', 0),
+                'max_loss': stats.get('max_loss', 0),
+                'best_symbol': stats.get('best_symbol'),
+                'worst_symbol': stats.get('worst_symbol')
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"[HISTORY] Failed to get trade history: {e}", exc_info=True)
+        return {
+            'status': 'error',
+            'error': str(e),
+            'message': 'Failed to retrieve trade history'
+        }
+
+
+@mcp.tool
+async def trade_adjust_position(
+    symbol: str,
+    adjustment_type: str,
+    params: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Adjust existing position (roll, resize, hedge, partial close).
+    
+    Args:
+        symbol: Symbol to adjust
+        adjustment_type: Type of adjustment ('roll', 'resize', 'hedge', 'partial_close')
+        params: Adjustment parameters specific to type:
+            - roll: {'new_expiry': 'YYYYMMDD', 'new_strike': float}
+            - resize: {'new_quantity': int}
+            - hedge: {'hedge_type': 'protective_put'|'covered_call', 'strike': float}
+            - partial_close: {'quantity_to_close': int}
+    
+    Returns:
+        Adjustment result with confirmation required for execution
+    """
+    from src.modules.execution.position_adjuster import PositionAdjuster
+    
+    logger.info(f"[ADJUST] Position adjustment requested - {symbol} {adjustment_type}")
+    logger.debug(f"[ADJUST] Parameters: {params}")
+    
+    try:
+        await ensure_tws_connected()
+        
+        # Get current position
+        from src.modules.tws.connection import tws_connection
+        positions = await tws_connection.get_positions()
+        
+        position = None
+        for pos in positions:
+            contract = ensure_contract(pos.contract)
+            if contract.symbol == symbol:
+                position = pos
+                break
+        
+        if not position:
+            logger.warning(f"[ADJUST] No position found for {symbol}")
+            return {
+                'status': 'error',
+                'error': 'No position found',
+                'message': f'No open position for {symbol}'
+            }
+        
+        logger.info(f"[ADJUST] Found position: {position.position} contracts")
+        
+        # Create adjuster
+        adjuster = PositionAdjuster()
+        
+        # Calculate adjustment
+        if adjustment_type == 'roll':
+            result = await adjuster.calculate_roll(
+                position=position,
+                new_expiry=params['new_expiry'],
+                new_strike=params.get('new_strike')
+            )
+            
+        elif adjustment_type == 'resize':
+            result = await adjuster.calculate_resize(
+                position=position,
+                new_quantity=params['new_quantity']
+            )
+            
+        elif adjustment_type == 'hedge':
+            result = await adjuster.calculate_hedge(
+                position=position,
+                hedge_type=params['hedge_type'],
+                strike=params.get('strike')
+            )
+            
+        elif adjustment_type == 'partial_close':
+            result = await adjuster.calculate_partial_close(
+                position=position,
+                quantity_to_close=params['quantity_to_close']
+            )
+            
+        else:
+            return {
+                'status': 'error',
+                'error': 'Invalid adjustment type',
+                'valid_types': ['roll', 'resize', 'hedge', 'partial_close']
+            }
+        
+        logger.info(f"[ADJUST] Adjustment calculated - Net cost: ${result.get('net_cost', 0):.2f}")
+        logger.debug(f"[ADJUST] Orders to execute: {len(result.get('orders', []))}")
+        
+        # Generate confirmation token
+        import uuid
+        confirmation_token = str(uuid.uuid4())
+        
+        # Store adjustment in session
+        session = TradingSession.get_or_create(symbol)
+        session.pending_adjustment = {
+            'token': confirmation_token,
+            'adjustment': result,
+            'timestamp': datetime.now()
+        }
+        
+        logger.info(f"[ADJUST] Confirmation token generated: {confirmation_token[:8]}...")
+        
+        return {
+            'status': 'confirmation_required',
+            'adjustment_type': adjustment_type,
+            'symbol': symbol,
+            'current_position': {
+                'quantity': position.position,
+                'avg_cost': position.avgCost
+            },
+            'proposed_adjustment': result,
+            'confirmation_token': confirmation_token,
+            'message': 'Review adjustment and confirm with token to execute'
+        }
+        
+    except Exception as e:
+        logger.error(f"[ADJUST] Failed to calculate adjustment: {e}", exc_info=True)
+        return {
+            'status': 'error',
+            'error': str(e),
+            'message': 'Failed to calculate position adjustment'
+        }
+
+
+@mcp.tool
+async def trade_analyze_greeks() -> Dict[str, Any]:
+    """
+    Analyze portfolio-wide Greeks with scenario analysis.
+    
+    Returns comprehensive Greeks analysis including:
+    - Aggregate Greeks across all positions
+    - Beta-weighted delta (SPY weighted)
+    - Greeks by underlying
+    - Scenario analysis (market moves)
+    - Time decay projection
+    
+    Returns:
+        Portfolio Greeks analysis with scenarios
+    """
+    from src.modules.risk.greeks_analyzer import GreeksAnalyzer
+    
+    logger.info("[GREEKS] Starting portfolio Greeks analysis")
+    
+    try:
+        await ensure_tws_connected()
+        
+        analyzer = GreeksAnalyzer()
+        
+        # Get current Greeks
+        current_greeks = await analyzer.get_portfolio_greeks()
+        
+        logger.info(f"[GREEKS] Portfolio Delta: {current_greeks.total_delta:.2f}, Theta: {current_greeks.total_theta:.2f}")
+        
+        # Calculate scenarios
+        scenarios = await analyzer.calculate_scenarios()
+        
+        logger.debug(f"[GREEKS] Calculated {len(scenarios)} market scenarios")
+        
+        # Time decay projection
+        time_decay = await analyzer.project_time_decay(days=5)
+        
+        # Greeks by underlying
+        by_underlying = await analyzer.get_greeks_by_underlying()
+        
+        logger.info(f"[GREEKS] Analysis complete - {len(by_underlying)} underlyings")
+        
+        return {
+            'status': 'success',
+            'timestamp': datetime.now().isoformat(),
+            'portfolio_greeks': current_greeks.to_dict(),
+            'greeks_by_underlying': by_underlying,
+            'scenario_analysis': scenarios,
+            'time_decay_projection': time_decay,
+            'risk_metrics': {
+                'direction_risk': 'bullish' if current_greeks.total_delta > 0 else 'bearish',
+                'delta_dollars': current_greeks.total_delta * 100,  # Assuming SPY at 100
+                'daily_theta_dollars': current_greeks.total_theta,
+                'vega_exposure': current_greeks.total_vega,
+                'gamma_risk': 'high' if abs(current_greeks.total_gamma) > 10 else 'moderate'
+            },
+            'recommendations': await analyzer.get_hedging_recommendations()
+        }
+        
+    except Exception as e:
+        logger.error(f"[GREEKS] Analysis failed: {e}", exc_info=True)
+        return {
+            'status': 'error',
+            'error': str(e),
+            'message': 'Failed to analyze portfolio Greeks'
+        }
+
+
 # Initialize TWS connection when needed
 async def ensure_tws_connected():
     """Ensure TWS connection is established."""

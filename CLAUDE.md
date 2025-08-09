@@ -3,8 +3,8 @@
 ## Project Overview
 SumpPump is an MCP (Model Context Protocol) server that bridges Claude Desktop with Interactive Brokers TWS for conversational options trading. It provides real-time market data access, strategy analysis, and trade execution with mandatory confirmation workflows.
 
-**Current Version**: 2.0.2 (January 2025)
-**Total MCP Tools**: 39 fully integrated and operational tools
+**Current Version**: 2.0.3 (January 2025)
+**Total MCP Tools**: 43 fully integrated and operational tools
 
 ## Core Architecture Principles
 
@@ -111,7 +111,7 @@ except TWSError as e:
 - Handles partial fills
 - Reports execution status
 
-## MCP Tool Specifications (39 Tools Total)
+## MCP Tool Specifications (43 Tools Total)
 
 ### Market Data Tools (12)
 - `trade_get_quote` - Real-time stock/ETF quotes
@@ -126,6 +126,12 @@ except TWSError as e:
 - `trade_get_depth_analytics` - Price impact analysis
 - `trade_scan_market` - Market scanner for opportunities (high IV, unusual options, momentum)
 - `trade_check_market_data` - Verify market data feed status and subscriptions
+
+### Portfolio & Analytics Tools (4) - NEW
+- `trade_get_portfolio_summary` - Aggregate P&L and portfolio Greeks
+- `trade_get_history` - Query past trades with filters
+- `trade_adjust_position` - Smart position adjustments (roll/resize/hedge)
+- `trade_analyze_greeks` - Portfolio-wide Greeks analysis with scenarios
 
 ### Strategy & Risk Tools (8)
 - `trade_calculate_strategy` - Analyze options strategies with P&L
@@ -291,7 +297,18 @@ pkill -f "server.py" && sleep 1
 - **RiskValidationFramework**: Multi-layer risk validation
 - **ExecutionSafety Validator**: Prevents accidental executions
 
-## CRITICAL RECENT FIXES (January 2025 - v2.0.2)
+## CRITICAL RECENT FIXES (January 2025 - v2.0.3)
+
+### Portfolio Tools Added - v2.0.3 (January 2025)
+- Added 4 new portfolio management tools for better visibility
+- `trade_get_portfolio_summary` - Aggregate P&L and Greeks across all positions
+- `trade_get_history` - Historical trade analysis with performance metrics
+- `trade_adjust_position` - Smart adjustments (roll/resize/hedge/partial close)
+- `trade_analyze_greeks` - Portfolio-wide Greeks with scenario analysis
+- Comprehensive logging with [PORTFOLIO], [HISTORY], [ADJUST], [GREEKS] prefixes
+- All tools leverage existing infrastructure for zero breaking changes
+
+## Previous Fixes (v2.0.2)
 
 ### Event Loop Issues - FULLY RESOLVED
 - Applied `nest_asyncio.apply()` at module start to allow nested event loops
